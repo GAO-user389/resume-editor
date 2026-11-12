@@ -1,0 +1,21 @@
+# 密钥与环境配置（绝不能提交）
+server/.env
+.env
+.env.*
+
+# 依赖
+node_modules/
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# 个人隐私文件
+高海洋-简历.html
+avatar.jpg
+avatar.png
+.screenshots/
+
+# 系统文件
+.DS_Store
+Thumbs.db

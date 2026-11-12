@@ -1,0 +1,2832 @@
+﻿<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>简历编辑器</title>
+<script src="html2canvas.min.js"></script>
+<script src="jspdf.umd.min.js"></script>
+<!-- 路线 A 新增：PDF/Word 文件解析 -->
+<script src="pdf.min.js"></script>
+<script src="mammoth.browser.min.js"></script>
+<script>
+  // pdf.js 全局路径配置
+  if (window['pdfjsLib']) window['pdfjsLib'].GlobalWorkerOptions.workerSrc = 'pdf.worker.min.js';
+</script>
+
+<style>
+  /* ================================================
+     设计规格 —— 简历模板设计说明.docx
+     主色 #1F4E79 深蓝；辅色 #E6F0F8 浅蓝；文字 #1C1C1C
+     所有字体 微软雅黑
+     页面 A4 210mm×297mm，左右边距 2cm
+     ================================================ */
+  :root {
+    /* 标准商务蓝（docx 默认） */
+    --primary: #1F4E79;
+    --primary-light: #E6F0F8;   /* 标签胶囊底色 */
+    --primary-dark: #153D63;
+    --text-dark: #1C1C1C;       /* 正文、机构名、姓名 */
+    --text-role: #4A4A4A;       /* 角色/职位、联系方式值 */
+    --text-muted: #7A7A7A;      /* 日期、英文副标题、联系方式标签 */
+    --divider-deep: #1F4E79;    /* 模块下双线-上深线 */
+    --divider-light: #D9D9D9;   /* 模块下双线-下浅线 */
+    --dot-color: #1F4E79;       /* 正文列表圆点 */
+    --link-color: #1F4E79;
+    --bg: #fff;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: "Microsoft YaHei", "微软雅黑", "PingFang SC", sans-serif;
+    background: #dfe3e8; color: var(--text-dark);
+    line-height: 1.65; min-height: 100vh; font-size: 9.2pt;
+  }
+
+  /* ========== 工具栏 ========== */
+  .toolbar {
+    position: sticky; top: 0; z-index: 1000;
+    background: linear-gradient(135deg, #1e293b, #334155);
+    padding: 10px 16px; display: flex; align-items: center; justify-content: space-between;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.2); flex-wrap: wrap; gap: 8px;
+  }
+  .toolbar .title { color: #fff; font-size: 15px; font-weight: 600; }
+  .toolbar .group { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .btn { padding: 6px 12px; border: none; border-radius: 5px; cursor: pointer; font-size: 12.5px; font-weight: 500; transition: all 0.15s; white-space: nowrap; }
+  .btn-tmpl { background: #fff; color: #1e293b; }
+  .btn-tmpl.active { background: var(--primary); color: #fff; }
+  .btn-edit { background: #3b82f6; color: #fff; }
+  .btn-ai { background: linear-gradient(135deg, #f59e0b, #ea580c); color: #fff; }
+  .btn-export { background: #10b981; color: #fff; }
+  .btn-reset { background: #6b7280; color: #fff; }
+
+  /* ========== 富文本编辑栏 ========== */
+  .richbar {
+    display: none; background: #f1f5f9; border-bottom: 1px solid #e2e8f0;
+    padding: 8px 16px; gap: 8px; align-items: center; flex-wrap: wrap;
+    position: sticky; top: 44px; z-index: 999;
+  }
+  body.editing .richbar { display: flex; }
+  .richbar .rb-group { display: flex; gap: 4px; align-items: center; padding-right: 8px; margin-right: 8px; border-right: 1px solid #cbd5e1; }
+  .richbar .rb-group:last-child { border-right: none; }
+  .rb-btn { width: 30px; height: 30px; border: 1px solid #cbd5e1; background: #fff; border-radius: 4px; cursor: pointer; font-size: 13px; font-weight: 700; display: flex; align-items: center; justify-content: center; }
+  .rb-btn:hover { background: var(--primary-light); border-color: var(--primary); color: var(--primary); }
+  .rb-btn.active { background: var(--primary); color: #fff; border-color: var(--primary); }
+  .rb-select { height: 30px; padding: 0 6px; border: 1px solid #cbd5e1; border-radius: 4px; background: #fff; font-size: 12px; }
+  .rb-label { font-size: 11px; color: #64748b; margin-right: 4px; }
+  .rb-slider { width: 80px; }
+  .color-swatches { display: flex; gap: 4px; align-items: center; }
+  .swatch { width: 22px; height: 22px; border-radius: 50%; border: 2px solid #fff; box-shadow: 0 0 0 1px #cbd5e1; cursor: pointer; }
+  .swatch.active { box-shadow: 0 0 0 2px var(--primary); }
+  .custom-color-dot { width: 22px; height: 22px; border-radius: 50%; border: 2px dashed #94a3b8; cursor: pointer; display: flex; align-items: center; justify-content: center; color: #94a3b8; font-size: 14px; position: relative; }
+  .custom-color-dot input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+
+  /* ========== 简历容器 ========== */
+  .page-wrap { display: flex; justify-content: center; padding: 12px 0 8px 0; }
+  #resume {
+    width: 210mm; height: 297mm; background: var(--bg);
+    box-shadow: 0 4px 24px rgba(0,0,0,0.15); border-radius: 2px; overflow: hidden;
+  }
+  .resume-inner { padding: 18mm 20mm; height: 100%; display: flex; flex-direction: column; }
+  /* 隐藏滚动条 */
+  #resume::-webkit-scrollbar { width: 0; }
+  #resume { scrollbar-width: none; }
+
+  /* ========== 编辑模式边框 ========== */
+  body.editing [contenteditable="true"] {
+    outline: 1.5px dashed var(--primary); outline-offset: 1.5px;
+    background: rgba(31,78,121,0.04); border-radius: 2px; cursor: text; transition: background 0.15s;
+  }
+  body.editing [contenteditable="true"]:focus {
+    outline: 2px solid var(--primary); background: rgba(31,78,121,0.08);
+  }
+  /* 板块删除按钮（编辑模式下显示） */
+  body.editing .section { position: relative; }
+  body.editing .section .section-del {
+    position: absolute; top: -2px; right: -2px; z-index: 10;
+    width: 18px; height: 18px; line-height: 16px; text-align: center;
+    background: #dc2626; color: #fff; border: none; border-radius: 50%;
+    font-size: 12px; cursor: pointer; display: none; padding: 0;
+  }
+  body.editing .section:hover .section-del { display: block; }
+  /* 整块编辑模式 */
+  body.block-editing .section,
+  body.block-editing .resume-header {
+    outline: 1.5px dashed var(--primary); outline-offset: 2px;
+    background: rgba(31,78,121,0.03); border-radius: 3px; cursor: text;
+  }
+  body.block-editing .section .section-del { display: none !important; }
+  #blockEditBtn.active { background: #7c3aed; color: #fff; }
+  /* 添加板块弹窗 */
+  .addsec-modal { position: fixed; inset: 0; background: rgba(0,0,0,0.5); display: none; align-items: center; justify-content: center; z-index: 9999; }
+  .addsec-modal.active { display: flex; }
+  .addsec-box { background: #fff; border-radius: 10px; padding: 22px; width: 420px; max-width: 92vw; box-shadow: 0 10px 40px rgba(0,0,0,0.2); }
+  .addsec-box h3 { margin: 0 0 14px; font-size: 16px; color: #1e293b; }
+  .addsec-presets { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+  .addsec-preset { padding: 6px 12px; border: 1px solid #cbd5e1; border-radius: 16px; background: #f8fafc; cursor: pointer; font-size: 13px; color: #334155; }
+  .addsec-preset:hover { background: #e0f2fe; border-color: #0284c7; color: #0284c7; }
+  .addsec-custom { display: flex; gap: 8px; }
+  .addsec-custom input { flex: 1; padding: 8px 10px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 13px; }
+  .addsec-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+
+
+  /* ================================================
+     头部 —— 姓名+求职意向胶囊+联系方式
+     ================================================ */
+  .resume-header { display: flex; gap: 16px; align-items: flex-start; margin-bottom: 8px; }
+  .avatar { width: 80px; height: 100px; object-fit: cover; flex-shrink: 0; border-radius: 2px; }
+  .header-info { flex: 1; }
+  .name { font-family: "Microsoft YaHei", sans-serif; font-size: 20pt; font-weight: bold; color: var(--text-dark); line-height: 1.15; }
+  .intent-pill {
+    display: inline-block; background: var(--primary); color: #fff;
+    font-size: 8.6pt; font-weight: bold; padding: 2px 10px; border-radius: 3px;
+    margin-top: 4px; letter-spacing: 1px;
+  }
+  .contact-bar {
+    margin-top: 6px; font-size: 8.4pt; color: var(--text-muted);
+    display: flex; flex-wrap: wrap; gap: 14px;
+  }
+  .contact-bar .label { color: var(--text-muted); font-size: 8.4pt; }
+  .contact-bar .val { color: var(--text-role); font-size: 8.4pt; }
+
+  /* ================================================
+     模块标题 —— 左侧深蓝竖条 + 中文 + 英文 + 双线分割
+     ================================================ */
+  .section { margin-bottom: 8px; }
+  .section-title {
+    display: flex; align-items: center; gap: 8px; height: 16px;
+    margin-bottom: 0;
+  }
+  .section-bar {
+    width: 3px; height: 11px; background: var(--primary); flex-shrink: 0;
+  }
+  .section-title-cn {
+    font-family: "Microsoft YaHei", sans-serif;
+    font-size: 10pt; font-weight: bold; color: var(--primary);
+  }
+  .section-title-en {
+    font-family: "Microsoft YaHei", sans-serif;
+    font-size: 7.5pt; font-weight: normal; color: var(--text-muted);
+    letter-spacing: 1.5px;
+  }
+  .section-divider {
+    height: 1.5px; background: var(--divider-deep); margin: 1px 0 0 0;
+  }
+  .section-divider-light {
+    height: 0.75px; background: var(--divider-light); margin-top: 1px; margin-bottom: 5px;
+  }
+
+  /* ================================================
+     教育 / 经历 / 项目 —— 机构+职位左对齐，日期右对齐
+     ================================================ */
+  .edu-item, .exp-header {
+    display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 1px;
+  }
+  .school, .company {
+    font-family: "Microsoft YaHei", sans-serif;
+    font-size: 9.9pt; font-weight: bold; color: var(--text-dark);
+  }
+  .school .major { font-weight: normal; color: var(--text-role); font-size: 9.4pt; margin: 0 3px; }
+  .school .degree, .project-tag {
+    display: inline-block; font-family: "Microsoft YaHei", sans-serif;
+    font-size: 7.3pt; font-weight: bold; color: var(--primary);
+    background: var(--primary-light); padding: 0 6px; border-radius: 2px;
+    margin-left: 4px; line-height: 13px;
+  }
+  .role { font-family: "Microsoft YaHei", sans-serif; font-size: 9.9pt; font-weight: bold; color: var(--text-role); }
+  .date { font-family: "Microsoft YaHei", sans-serif; font-size: 8.5pt; font-weight: normal; color: var(--text-muted); white-space: nowrap; }
+
+  /* ================================================
+     正文 —— 深蓝圆点 • ，9.2pt，加粗高亮关键词
+     ================================================ */
+  .exp-item { margin-bottom: 6px; }
+  .exp-desc {
+    font-family: "Microsoft YaHei", sans-serif;
+    font-size: 9.2pt; color: var(--text-dark); line-height: 1.7; margin-top: 2px; text-align: justify;
+  }
+  .exp-desc ul { list-style: none; padding-left: 0; }
+  .exp-desc li { padding-left: 12px; position: relative; margin-bottom: 2px; }
+  .exp-desc li::before {
+    content: "•"; position: absolute; left: 0; color: var(--dot-color);
+    font-size: 13pt; line-height: 1.55; font-weight: bold;
+  }
+  .exp-desc strong { font-weight: bold; color: var(--text-dark); }
+  .exp-desc a, .project-link {
+    color: var(--link-color); font-size: 8.4pt; text-decoration: none; word-break: break-all;
+    display: block; margin-top: 1px;
+  }
+
+  /* 技能区 */
+  .skills-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+  .skill-cat .skill-name { font-size: 9.9pt; font-weight: bold; color: var(--text-dark); margin-bottom: 0; }
+  .skill-cat .skill-val { font-size: 8.8pt; color: var(--text-role); }
+
+  /* ================================================
+      JD 智能匹配分析弹窗（路线 A 核心）
+     ================================================ */
+  .jd-modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.55); z-index: 2000; justify-content: center; align-items: center; }
+  .jd-modal.active { display: flex; }
+  .jd-modal-content { background: #fff; border-radius: 12px; width: 94%; max-width: 860px; max-height: 90vh; overflow: hidden; display: flex; flex-direction: column; box-shadow: 0 20px 60px rgba(0,0,0,0.3); }
+  .jd-header { padding: 16px 22px; border-bottom: 1px solid #eee; display: flex; justify-content: space-between; align-items: center; }
+  .jd-header h3 { font-size: 17px; color: #1C1C1C; }
+  .jd-close { cursor: pointer; font-size: 22px; color: #999; border: none; background: none; }
+  .jd-body { padding: 16px 22px; overflow-y: auto; flex: 1; }
+  .jd-footer { padding: 14px 22px; border-top: 1px solid #eee; display: flex; justify-content: flex-end; gap: 8px; }
+
+  /* 输入区 */
+  .jd-section-title { font-size: 13px; font-weight: bold; color: var(--primary); margin: 4px 0 8px; display: flex; align-items: center; gap: 6px; }
+  .jd-section-title .num { background: var(--primary); color: #fff; width: 20px; height: 20px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 11px; font-weight: bold; }
+  .jd-input-row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 12px; }
+  .jd-field { display: flex; flex-direction: column; }
+  .jd-field label { font-size: 12px; color: #555; margin-bottom: 4px; }
+  .jd-field textarea, .jd-field input[type=text] {
+    padding: 8px 10px; border: 1px solid #d1d5db; border-radius: 5px; font-size: 12.5px; font-family: inherit; resize: vertical; width: 100%;
+  }
+  .jd-field textarea:focus, .jd-field input:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px rgba(31,78,121,0.12); }
+  .jd-field textarea { min-height: 130px; }
+  .jd-field .file-row { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
+  .jd-field .file-row .file-btn { font-size: 11.5px; padding: 3px 10px; background: var(--primary-light); color: var(--primary); border: 1px solid var(--primary); border-radius: 3px; cursor: pointer; }
+  .jd-field .file-row .file-btn input { display: none; }
+  .jd-field .file-row .file-name { font-size: 11px; color: #666; }
+  .jd-field .hint { font-size: 10.5px; color: #999; margin-top: 3px; }
+
+  /* 结果区 */
+  .jd-result-section { margin-top: 14px; padding-top: 14px; border-top: 1px dashed #ddd; display: none; }
+  .jd-result-section.active { display: block; }
+  .jd-score-row { display: flex; align-items: center; gap: 20px; margin-bottom: 14px; }
+  .jd-score-ring { width: 90px; height: 90px; border-radius: 50%; display: flex; flex-direction: column; align-items: center; justify-content: center; color: #fff; font-weight: bold; flex-shrink: 0; }
+  .jd-score-ring .num { font-size: 26px; line-height: 1; }
+  .jd-score-ring .label { font-size: 10px; margin-top: 2px; opacity: 0.9; letter-spacing: 1px; }
+  .jd-score-ring.high { background: linear-gradient(135deg, #15803D, #16A34A); }
+  .jd-score-ring.mid { background: linear-gradient(135deg, #D97706, #F59E0B); }
+  .jd-score-ring.low { background: linear-gradient(135deg, #DC2626, #EF4444); }
+  .jd-score-info { flex: 1; }
+  .jd-score-info h4 { font-size: 14px; color: #1C1C1C; margin-bottom: 4px; }
+  .jd-score-info p { font-size: 12px; color: #666; line-height: 1.6; }
+
+  /* JD 结构化提取展示 */
+  .jd-struct { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 14px; }
+  .jd-struct-card { background: #F8FAFC; border: 1px solid #E2E8F0; border-radius: 6px; padding: 10px 12px; }
+  .jd-struct-card h5 { font-size: 11.5px; color: var(--primary); margin-bottom: 5px; font-weight: bold; letter-spacing: 0.5px; }
+  .jd-struct-card ul { list-style: none; font-size: 11.5px; color: #333; line-height: 1.8; }
+  .jd-struct-card li::before { content: "›"; color: var(--primary); margin-right: 4px; }
+
+  /* 匹配三栏 */
+  .jd-match-columns { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 14px; }
+  .jd-match-col { border-radius: 6px; padding: 10px 12px; border: 1px solid transparent; }
+  .jd-match-col h5 { font-size: 11.5px; margin-bottom: 6px; font-weight: bold; display: flex; align-items: center; gap: 5px; }
+  .jd-match-col h5 .count { background: #fff; border-radius: 10px; padding: 0 6px; font-size: 10px; font-weight: normal; }
+  .jd-match-col ul { list-style: none; font-size: 11.5px; line-height: 1.8; }
+  .jd-match-col li { padding: 1px 0; }
+  .jd-col-covered { background: #F0FDF4; border-color: #BBF7D0; }
+  .jd-col-covered h5 { color: #15803D; }
+  .jd-col-covered li { color: #166534; }
+  .jd-col-partial { background: #FFFBEB; border-color: #FDE68A; }
+  .jd-col-partial h5 { color: #B45309; }
+  .jd-col-partial li { color: #92400E; }
+  .jd-col-missing { background: #FEF2F2; border-color: #FECACA; }
+  .jd-col-missing h5 { color: #B91C1C; }
+  .jd-col-missing li { color: #991B1B; }
+
+  /* 改写建议 */
+  .jd-rewrite-area { background: #FFF7ED; border: 1px dashed #F59E0B; border-radius: 6px; padding: 12px; margin-bottom: 12px; }
+  .jd-rewrite-area h5 { font-size: 12.5px; color: #C2410C; margin-bottom: 6px; }
+  .jd-rewrite-list { list-style: none; font-size: 12px; line-height: 1.9; }
+  .jd-rewrite-list li::before { content: ""; margin-right: 4px; }
+  .jd-rewrite-list li strong { color: #9A3412; }
+
+  /* 加载动画 */
+  .jd-loading { display: flex; align-items: center; justify-content: center; padding: 30px; color: var(--primary); font-size: 13px; }
+
+  .ai-modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.55); z-index: 2000; justify-content: center; align-items: center; }
+  .ai-modal.active { display: flex; }
+  .ai-modal-content { background: #fff; border-radius: 12px; padding: 22px; width: 92%; max-width: 560px; max-height: 85vh; overflow-y: auto; box-shadow: 0 20px 60px rgba(0,0,0,0.3); }
+  .ai-modal h3 { font-size: 17px; color: var(--text-dark); margin-bottom: 12px; }
+  .ai-modal label { display: block; font-size: 12.5px; color: #666; margin: 8px 0 4px; }
+  .ai-modal textarea, .ai-modal input { width: 100%; padding: 8px 10px; border: 1px solid #d1d5db; border-radius: 5px; font-size: 12.5px; font-family: inherit; resize: vertical; }
+  .ai-modal textarea:focus, .ai-modal input:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px rgba(31,78,121,0.12); }
+  .ai-modal .preview-box { background: #f5f7fa; border: 1px solid #e5e7eb; border-radius: 5px; padding: 10px; margin-top: 8px; font-size: 12.5px; line-height: 1.7; white-space: pre-wrap; max-height: 220px; overflow-y: auto; }
+  .ai-modal .ai-target { font-size: 11px; color: var(--primary); background: var(--primary-light); padding: 3px 8px; border-radius: 4px; display: inline-block; margin-bottom: 8px; }
+  .ai-modal .chips { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 5px; }
+  .ai-modal .chip { background: #f3f4f6; border: 1px solid #e5e7eb; border-radius: 12px; padding: 2px 10px; font-size: 11.5px; color: #555; cursor: pointer; }
+  .ai-modal .chip:hover { background: var(--primary-light); border-color: var(--primary); color: var(--primary); }
+  /* JD 弹窗里的 chip（和 ai-modal 同一个类名，分开写避免冲突） */
+  .jd-modal .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+  .jd-modal .chip {
+    background: #F3F4F6; border: 1px solid #E5E7EB; border-radius: 12px;
+    padding: 2px 10px; font-size: 11.5px; color: #555; cursor: pointer; user-select: none;
+    transition: all 0.12s;
+  }
+  .jd-modal .chip:hover { background: var(--primary-light); border-color: var(--primary); color: var(--primary); }
+  .jd-modal .chip-active {
+    background: var(--primary); color: #fff; border-color: var(--primary);
+  }
+  .ai-modal .actions { display: flex; gap: 6px; margin-top: 12px; justify-content: flex-end; }
+  .ai-loading { display: inline-block; width: 12px; height: 12px; border: 2px solid var(--primary); border-top-color: transparent; border-radius: 50%; animation: spin 0.8s linear infinite; vertical-align: middle; margin-right: 5px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @keyframes jd-spin { to { transform: rotate(360deg); } }
+
+  .export-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(255,255,255,0.92); z-index: 3000; justify-content: center; align-items: center; flex-direction: column; gap: 12px; }
+  .export-overlay.active { display: flex; }
+  .export-overlay .spinner { width: 44px; height: 44px; border: 4px solid var(--primary); border-top-color: transparent; border-radius: 50%; animation: spin 1s linear infinite; }
+  .export-overlay .tip { font-size: 13px; color: var(--text-dark); }
+
+  /* 打印 */
+  @media print {
+    body { background: #fff; }
+    .toolbar, .richbar, .ai-modal, .export-overlay, .addsec-modal { display: none !important; }
+    .page-wrap { padding: 0; }
+    #resume { width: 210mm; height: auto; box-shadow: none; border-radius: 0; overflow: visible; }
+    body.editing [contenteditable] { outline: none !important; background: transparent !important; }
+    .section-del { display: none !important; }
+    body.block-editing .section, body.block-editing .resume-header { outline: none !important; background: transparent !important; }
+    @page { size: A4; margin: 0; }
+  }
+
+  /* ================================================
+     5 套简约模板（body class 切换）
+     ================================================ */
+
+  /* 1. 极简单栏 minimal —— 纯白、无彩色、细线、无技能条 */
+  body.tmpl-minimal {
+    --primary: #111827;
+    --primary-light: #F3F4F6;
+    --primary-dark: #111827;
+    --text-dark: #111827;
+    --text-role: #374151;
+    --text-muted: #6B7280;
+    --divider-deep: #E5E7EB;
+    --divider-light: #F3F4F6;
+    --dot-color: #9CA3AF;
+    --link-color: #2563EB;
+  }
+  body.tmpl-minimal .section-title { background: none; padding: 0; margin-bottom: 6px; border-bottom: 1px solid #E5E7EB; }
+  body.tmpl-minimal .section-title-cn { color: #111827; font-size: 11pt; }
+  body.tmpl-minimal .section-title-en { display: none; }
+  body.tmpl-minimal .section-bar { display: none; }
+  body.tmpl-minimal .section-divider, body.tmpl-minimal .section-divider-light { display: none; }
+  body.tmpl-minimal .resume-header { flex-direction: column; align-items: flex-start; gap: 2px; }
+  body.tmpl-minimal .header-info { flex-direction: row; flex-wrap: wrap; gap: 8px 16px; margin-top: 4px; }
+  body.tmpl-minimal .header-info .info-item .label { display: none; }
+  body.tmpl-minimal .degree, body.tmpl-minimal .project-tag { background: #F3F4F6; color: #374151; border: 1px solid #E5E7EB; }
+  body.tmpl-minimal .avatar { border-radius: 4px; box-shadow: none; border: 1px solid #E5E7EB; }
+
+  /* 2. 技能前置 tech —— 技能板块放最前，适合技术岗位 */
+  body.tmpl-tech {
+    --primary: #1E3A5F;
+    --primary-light: #EEF2F7;
+    --primary-dark: #1E3A5F;
+    --text-dark: #1F2937;
+    --text-role: #374151;
+    --text-muted: #6B7280;
+    --divider-deep: #CBD5E1;
+    --divider-light: #E2E8F0;
+    --dot-color: #475569;
+    --link-color: #1E3A5F;
+  }
+  body.tmpl-tech .section-title { background: none; padding: 0; border-bottom: 2px solid #1E3A5F; }
+  body.tmpl-tech .section-title-cn { color: #1E3A5F; font-size: 11.5pt; letter-spacing: 1px; }
+  body.tmpl-tech .section-title-en { display: none; }
+  body.tmpl-tech .section-bar { display: none; }
+  body.tmpl-tech .section-divider, body.tmpl-tech .section-divider-light { display: none; }
+  body.tmpl-tech .skill-group .skill-name { font-weight: 600; color: #1E3A5F; }
+  body.tmpl-tech .degree, body.tmpl-tech .project-tag { background: #EEF2F7; color: #1E3A5F; }
+
+  /* 3. 学术简历 academic —— 日期轴、研究/论文优先、衬线感 */
+  body.tmpl-academic {
+    --primary: #1F2937;
+    --primary-light: #F9FAFB;
+    --primary-dark: #111827;
+    --text-dark: #1F2937;
+    --text-role: #4B5563;
+    --text-muted: #6B7280;
+    --divider-deep: #D1D5DB;
+    --divider-light: #E5E7EB;
+    --dot-color: #6B7280;
+    --link-color: #1D4ED8;
+  }
+  body.tmpl-academic { font-family: "Georgia", "Times New Roman", "Microsoft YaHei", serif; }
+  body.tmpl-academic .name { font-family: "Georgia", serif; letter-spacing: 2px; }
+  body.tmpl-academic .section-title { background: none; padding: 0; margin-bottom: 8px; }
+  body.tmpl-academic .section-title-cn { color: #1F2937; font-size: 12pt; font-family: "Georgia", serif; border-bottom: 1px solid #9CA3AF; padding-bottom: 2px; display: inline-block; }
+  body.tmpl-academic .section-title-en { display: none; }
+  body.tmpl-academic .section-bar { display: none; }
+  body.tmpl-academic .section-divider, body.tmpl-academic .section-divider-light { display: none; }
+  body.tmpl-academic .date { font-family: "Georgia", serif; font-style: italic; color: #6B7280; }
+  body.tmpl-academic .exp-desc li { font-size: 9pt; line-height: 1.7; }
+
+  /* 4. 细线强调 accent —— 标题彩色下划线，多主题色 */
+  body.tmpl-accent {
+    --primary: #0F766E;
+    --primary-light: #F0FDFA;
+    --primary-dark: #134E4A;
+    --text-dark: #0F172A;
+    --text-role: #334155;
+    --text-muted: #64748B;
+    --divider-deep: #0F766E;
+    --divider-light: #E2E8F0;
+    --dot-color: #0F766E;
+    --link-color: #0F766E;
+  }
+  body.tmpl-accent .section-title { background: none; padding: 0; position: relative; height: auto; min-height: 24px; margin-bottom: 6px; align-items: flex-end; }
+  body.tmpl-accent .section-title-cn { color: #0F172A; font-size: 11.5pt; padding-bottom: 3px; border-bottom: 2px solid var(--primary); display: inline-block; line-height: 1.4; }
+  body.tmpl-accent .section-title-en { display: none; }
+  body.tmpl-accent .section-bar { display: none; }
+  body.tmpl-accent .section-divider, body.tmpl-accent .section-divider-light { display: none; }
+  body.tmpl-accent .degree, body.tmpl-accent .project-tag { background: var(--primary-light); color: var(--primary); border: none; }
+  body.tmpl-accent .name { color: var(--primary); }
+
+  /* 5. 打印友好 print —— 纯黑灰、无背景色、省墨 */
+  body.tmpl-print {
+    --primary: #000000;
+    --primary-light: #FFFFFF;
+    --primary-dark: #000000;
+    --text-dark: #000000;
+    --text-role: #333333;
+    --text-muted: #666666;
+    --divider-deep: #000000;
+    --divider-light: #CCCCCC;
+    --dot-color: #000000;
+    --link-color: #000000;
+  }
+  body.tmpl-print .section-title { background: none; padding: 0; border-bottom: 1.5px solid #000; }
+  body.tmpl-print .section-title-cn { color: #000; font-size: 11pt; text-transform: uppercase; letter-spacing: 1px; }
+  body.tmpl-print .section-title-en { display: none; }
+  body.tmpl-print .section-bar { display: none; }
+  body.tmpl-print .section-divider, body.tmpl-print .section-divider-light { display: none; }
+  body.tmpl-print .degree, body.tmpl-print .project-tag { background: #fff; color: #000; border: 1px solid #000; }
+  body.tmpl-print .name { color: #000; }
+  body.tmpl-print .intent-pill { background: #fff; color: #000; border: 1px solid #000; }
+  body.tmpl-print .avatar { border: 1px solid #000; box-shadow: none; border-radius: 0; }
+
+  /* 通用：模板切换时重置 */
+  body[class*="tmpl-"] .section { margin-bottom: 14px; }
+</style>
+</head>
+<body class="tmpl-standard">
+
+<!-- 工具栏 -->
+<div class="toolbar">
+  <div class="title"> 简历编辑器</div>
+  <div class="group">
+    <select class="rb-select" id="templateSelect" onchange="switchTemplate(this.value)" style="background:#fff;color:#1e293b;font-weight:600;">
+      <option value="standard">商务蓝（当前）</option>
+      <option value="minimal">极简单栏</option>
+      <option value="tech">技能前置（技术）</option>
+      <option value="academic">学术简历</option>
+      <option value="accent">细线强调</option>
+      <option value="print">打印友好</option>
+    </select>
+    <select class="rb-select" id="jobTemplateSelect" onchange="loadJobTemplate(this.value)" style="background:#ECFDF5;color:#065F46;font-weight:600;">
+      <option value="">岗位模板（示例内容）</option>
+      <option value="operations">运营岗</option>
+      <option value="marketing">市场岗</option>
+      <option value="sales">销售岗</option>
+      <option value="functional">职能岗（HR/行政）</option>
+      <option value="popular">通用热门</option>
+    </select>
+    <button class="btn btn-reset" onclick="openUploadModal()" style="background:#0891b2;color:#fff;"> 上传简历</button>
+    <button class="btn btn-ai" onclick="openAISettings()" style="background:#7c3aed;color:#fff;"> AI 设置</button>
+    <button class="btn btn-edit" id="editBtn" onclick="toggleEdit()"> 开启编辑</button>
+    <button class="btn" id="addSectionBtn" onclick="openAddSectionModal()" style="background:#059669;color:#fff;display:none;"> 添加板块</button>
+    <button class="btn btn-reset" id="undoBtn" onclick="undoEdit()" disabled style="opacity:0.4;cursor:not-allowed;"> 撤销上一步</button>
+    <span id="saveStatus" style="font-size:11px;color:#fff;opacity:0.7;display:none;margin-right:4px;"></span>
+    <button class="btn btn-ai" onclick="openJD()"> JD匹配分析</button>
+    <button class="btn btn-export" onclick="exportPDF()"> 导出PDF</button>
+  </div>
+</div>
+
+<!-- 富文本编辑栏 -->
+<div class="richbar" id="richbar">
+  <div class="rb-group">
+    <span class="rb-label">字体</span>
+    <select class="rb-select" onchange="execCmd('fontName', this.value)">
+      <option value="'Microsoft YaHei'">微软雅黑</option>
+      <option value="'PingFang SC'">苹方</option>
+      <option value="'SimSun'">宋体</option>
+      <option value="'SimHei'">黑体</option>
+      <option value="'KaiTi'">楷体</option>
+      <option value="Arial, sans-serif">Arial</option>
+    </select>
+  </div>
+  <div class="rb-group">
+    <span class="rb-label">字号</span>
+    <select class="rb-select" onchange="execCmd('fontSize', this.value)">
+      <option value="1">8pt</option>
+      <option value="2">10pt</option>
+      <option value="3">12pt</option>
+      <option value="4">14pt</option>
+      <option value="5">18pt</option>
+    </select>
+  </div>
+  <div class="rb-group">
+    <button class="rb-btn" title="加粗" onclick="execCmd('bold')"><b>B</b></button>
+    <button class="rb-btn" title="斜体" onclick="execCmd('italic')"><i>I</i></button>
+    <button class="rb-btn" title="下划线" onclick="execCmd('underline')"><u>U</u></button>
+  </div>
+  <div class="rb-group">
+    <button class="rb-btn" title="项目符号" onclick="execCmd('insertUnorderedList')">•</button>
+    <button class="rb-btn" title="编号列表" onclick="execCmd('insertOrderedList')">1.</button>
+  </div>
+  <div class="rb-group">
+    <span class="rb-label">行距</span>
+    <input type="range" min="130" max="220" value="170" class="rb-slider" oninput="setLineHeight(this.value)">
+  </div>
+  <div class="rb-group">
+    <span class="rb-label">主色</span>
+    <div class="color-swatches">
+      <div class="swatch active" style="background:#1F4E79" data-color="#1F4E79" onclick="setPrimaryColor(this.dataset.color, this)"></div>
+      <div class="swatch" style="background:#333333" data-color="#333333" onclick="setPrimaryColor(this.dataset.color, this)"></div>
+      <div class="swatch" style="background:#1E40AF" data-color="#1E40AF" onclick="setPrimaryColor(this.dataset.color, this)"></div>
+      <div class="swatch" style="background:#DC2626" data-color="#DC2626" onclick="setPrimaryColor(this.dataset.color, this)"></div>
+      <div class="swatch" style="background:#15803D" data-color="#15803D" onclick="setPrimaryColor(this.dataset.color, this)"></div>
+      <div class="swatch" style="background:#7C3AED" data-color="#7C3AED" onclick="setPrimaryColor(this.dataset.color, this)"></div>
+      <div class="swatch" style="background:#0891B2" data-color="#0891B2" onclick="setPrimaryColor(this.dataset.color, this)"></div>
+      <div class="custom-color-dot" title="自定义">+<input type="color" onchange="setPrimaryColor(this.value, null)"></div>
+    </div>
+  </div>
+  <div class="rb-group">
+    <button class="rb-btn" id="blockEditBtn" title="整块编辑：以整个板块为单位编辑" onclick="toggleBlockEdit()" style="font-size:11px;padding:0 10px;font-weight:600;">整块编辑</button>
+  </div>
+</div>
+
+<!-- 简历 -->
+<div class="page-wrap">
+  <div id="resume">
+    <div class="resume-inner">
+
+      <!-- 头部 -->
+      <div class="resume-header">
+        <img class="avatar" src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA4MCAxMDAiPjxyZWN0IHdpZHRoPSI4MCIgaGVpZ2h0PSIxMDAiIGZpbGw9IiNFNUU3RUIiLz48Y2lyY2xlIGN4PSI0MCIgY3k9IjM1IiByPSIxNSIgZmlsbD0iIzlDQTNDRiIvPjxlbGxpcHNlIGN4PSI0MCIgY3k9IjgwIiByeD0iMjUiIHJ5PSIyMCIgZmlsbD0iIzlDQTNDRiIvPjwvc3ZnPg==" alt="头像" >
+        <div class="header-info">
+          <div class="name" contenteditable="false">你的姓名</div>
+          <div class="intent-pill" contenteditable="false">求职意向 · 目标岗位</div>
+          <div class="contact-bar">
+            <span><span class="label">手机</span> <span class="val" contenteditable="false">你的手机号</span></span>
+            <span><span class="label">邮箱</span> <span class="val" contenteditable="false">your@email.com</span></span>
+          </div>
+        </div>
+      </div>
+
+      <!-- 教育背景 -->
+      <div class="section">
+        <div class="section-title">
+          <span class="section-bar"></span>
+          <span class="section-title-cn" contenteditable="false">教育背景</span>
+          <span class="section-title-en">EDUCATION</span>
+        </div>
+        <div class="section-divider"></div>
+        <div class="section-divider-light"></div>
+
+        <div class="edu-item">
+          <div class="school">
+            <span contenteditable="false">XX大学</span>
+            <span class="major">· XX专业</span>
+            <span class="degree">硕士在读</span>
+          </div>
+          <div class="date" contenteditable="false">2025.09 – 2028.06</div>
+        </div>
+        <div class="edu-item">
+          <div class="school">
+            <span contenteditable="false">XX财经大学</span>
+            <span class="major">· XX专业</span>
+            <span class="degree">本科</span>
+          </div>
+          <div class="date" contenteditable="false">2020.09 – 2024.06</div>
+        </div>
+      </div>
+
+      <!-- 实习经历 -->
+      <div class="section">
+        <div class="section-title">
+          <span class="section-bar"></span>
+          <span class="section-title-cn" contenteditable="false">实习经历</span>
+          <span class="section-title-en">INTERNSHIP</span>
+        </div>
+        <div class="section-divider"></div>
+        <div class="section-divider-light"></div>
+
+        <div class="exp-item">
+          <div class="exp-header">
+            <div>
+              <span class="company" contenteditable="false">XX科技有限公司</span>
+              <span class="role"> ｜ 目标岗位实习生</span>
+            </div>
+            <div class="date" contenteditable="false">2026.06 – 2026.08</div>
+          </div>
+          <div class="exp-desc" contenteditable="false">
+            <ul>
+              <li><strong>工作内容一：</strong>在此输入你的核心工作内容与职责，例如参与产品迭代、用户调研、数据分析等。</li>
+              <li><strong>工作内容二：</strong>在此输入你采取的关键动作与方法论，例如竞品分析、方案设计、跨团队协作等。</li>
+              <li><strong>工作内容三：</strong>在此输入你的工作产出与可量化成果，例如推动功能上线、效率提升 XX% 等。</li>
+              <li><strong>工作内容四：</strong>在此输入你的额外贡献或亮点，例如沉淀方法论、优化流程等。</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+
+      <!-- 项目经历 -->
+      <div class="section">
+        <div class="section-title">
+          <span class="section-bar"></span>
+          <span class="section-title-cn" contenteditable="false">项目经历</span>
+          <span class="section-title-en">PROJECTS</span>
+        </div>
+        <div class="section-divider"></div>
+        <div class="section-divider-light"></div>
+
+        <div class="exp-item">
+          <div class="exp-header">
+            <div>
+              <span class="company" contenteditable="false">XX项目一</span>
+              <span class="project-tag">个人作品</span>
+            </div>
+            <div class="date" contenteditable="false">2026.06 – 至今</div>
+          </div>
+          <div class="exp-desc" contenteditable="false">
+            <ul>
+              <li>项目相关链接（示例）
+                <a class="project-link" href="#" target="_blank">项目演示链接（示例）</a>
+              </li>
+              <li><strong>项目职责：</strong>在此输入你在该项目中的角色与核心职责，例如负责需求梳理、方案设计、开发落地等。</li>
+              <li><strong>关键动作：</strong>在此输入你采取的关键行动与方法论，例如用户调研、数据分析、方案设计、跨团队协作等。</li>
+              <li><strong>成果产出：</strong>在此输入项目最终成果与量化指标，例如上线后用户增长 XX%、效率提升 XX% 等。</li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="exp-item">
+          <div class="exp-header">
+            <div>
+              <span class="company" contenteditable="false">XX项目二</span>
+              <span class="project-tag">个人产品项目</span>
+            </div>
+            <div class="date" contenteditable="false">2026.06 – 2026.08</div>
+          </div>
+          <div class="exp-desc" contenteditable="false">
+            <ul>
+              <li><a class="project-link" href="#" target="_blank">项目演示链接（示例）</a></li>
+              <li><strong>项目背景：</strong>在此输入项目发起的背景与要解决的核心问题。</li>
+              <li><strong>方案设计：</strong>在此输入你的解决方案设计思路与核心模块。</li>
+              <li><strong>落地成果：</strong>在此输入项目落地情况与可量化的成果指标。</li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="exp-item">
+          <div class="exp-header">
+            <div>
+              <span class="company" contenteditable="false">XX项目三</span>
+              <span class="project-tag">个人项目</span>
+            </div>
+            <div class="date" contenteditable="false">2026.03 – 2026.05</div>
+          </div>
+          <div class="exp-desc" contenteditable="false">
+            <ul>
+              <li><strong>背景洞察：</strong>在此输入项目背景与核心洞察。</li>
+              <li><strong>方案设计：</strong>在此输入解决方案与具体动作。</li>
+              <li><strong>方法论沉淀：</strong>在此输入可复用的方法论或经验总结。</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+
+      <!-- 技能与证书 -->
+      <div class="section">
+        <div class="section-title">
+          <span class="section-bar"></span>
+          <span class="section-title-cn" contenteditable="false">技能与证书</span>
+          <span class="section-title-en">SKILLS</span>
+        </div>
+        <div class="section-divider"></div>
+        <div class="section-divider-light"></div>
+
+        <div class="skills-grid">
+          <div class="skill-cat">
+            <div class="skill-name" contenteditable="false">数据分析</div>
+            <div class="skill-val" contenteditable="false">Excel（数据透视 / 函数）、SQL</div>
+          </div>
+          <div class="skill-cat">
+            <div class="skill-name" contenteditable="false">运营工具</div>
+            <div class="skill-val" contenteditable="false">飞书多维表格、Axure、XMind</div>
+          </div>
+          <div class="skill-cat">
+            <div class="skill-name" contenteditable="false">语言与证书</div>
+            <div class="skill-val" contenteditable="false">CET-4 / CET-6</div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<!--  上传简历弹窗 -->
+<div class="jd-modal" id="uploadModal">
+  <div class="jd-modal-content">
+    <div class="jd-header">
+      <h3> 上传简历文件（PDF / Word / TXT）</h3>
+      <button class="jd-close" onclick="document.getElementById('uploadModal').classList.remove('active')"></button>
+    </div>
+    <div class="jd-body">
+      <div class="jd-section-title"><span class="num">1</span> 选择文件</div>
+      <div class="jd-field" style="margin-bottom:14px;">
+        <div class="file-row">
+          <label class="file-btn"> 选择简历文件<input type="file" id="resumeUploadFile" accept=".pdf,.docx,.doc,.txt" style="display:none;"></label>
+          <span class="file-name" id="uploadFileName"></span>
+        </div>
+        <div class="hint">支持 PDF / Word / TXT。解析后会智能识别各板块并填入编辑器。</div>
+      </div>
+
+      <div class="jd-section-title"><span class="num">2</span> 解析预览（确认后填入）</div>
+      <div class="jd-field" style="margin-bottom:14px;">
+        <textarea id="uploadedResumeText" style="min-height:180px;" placeholder="上传文件后，解析出的文本会显示在这里，你可以先检查再填入..."></textarea>
+      </div>
+
+      <div class="jd-section-title"><span class="num">3</span> 填入方式</div>
+      <div style="display:flex;gap:10px;margin-bottom:14px;flex-wrap:wrap;">
+        <label style="font-size:12px;cursor:pointer;display:flex;align-items:center;gap:4px;">
+          <input type="radio" name="fillMode" value="smart" checked> 智能分板块填入（推荐）
+        </label>
+        <label style="font-size:12px;cursor:pointer;display:flex;align-items:center;gap:4px;">
+          <input type="radio" name="fillMode" value="full"> 整体替换为单栏简历
+        </label>
+      </div>
+
+      <div class="jd-loading" id="uploadLoading" style="display:none;"> 正在解析文件...</div>
+    </div>
+    <div class="jd-footer">
+      <button class="btn btn-reset" onclick="document.getElementById('uploadModal').classList.remove('active')">关闭</button>
+      <button class="btn btn-export" onclick="fillUploadedResume()"> 确认填入简历</button>
+    </div>
+  </div>
+</div>
+
+<!-- 添加板块弹窗 -->
+<div class="addsec-modal" id="addSectionModal">
+  <div class="addsec-box">
+    <h3>添加板块</h3>
+    <div class="addsec-presets" id="addSecPresets">
+      <span class="addsec-preset" onclick="document.getElementById('addSecName').value='获奖经历';addSectionFromInput()">获奖经历</span>
+      <span class="addsec-preset" onclick="document.getElementById('addSecName').value='自我评价';addSectionFromInput()">自我评价</span>
+      <span class="addsec-preset" onclick="document.getElementById('addSecName').value='校园经历';addSectionFromInput()">校园经历</span>
+      <span class="addsec-preset" onclick="document.getElementById('addSecName').value='实习经历';addSectionFromInput()">实习经历</span>
+      <span class="addsec-preset" onclick="document.getElementById('addSecName').value='项目经历';addSectionFromInput()">项目经历</span>
+      <span class="addsec-preset" onclick="document.getElementById('addSecName').value='教育背景';addSectionFromInput()">教育背景</span>
+      <span class="addsec-preset" onclick="document.getElementById('addSecName').value='技能证书';addSectionFromInput()">技能证书</span>
+    </div>
+    <div class="addsec-custom">
+      <input id="addSecName" type="text" placeholder="或输入自定义板块名称，如：论文发表" onkeydown="if(event.key==='Enter')addSectionFromInput()">
+    </div>
+    <div class="addsec-actions">
+      <button class="btn btn-reset" onclick="document.getElementById('addSectionModal').classList.remove('active')">取消</button>
+      <button class="btn btn-export" onclick="addSectionFromInput()">添加</button>
+    </div>
+  </div>
+</div>
+
+<!-- 飞书表格导入弹窗 -->
+<div class="addsec-modal" id="feishuModal">
+  <div class="addsec-box" style="width:520px;">
+    <h3>从飞书表格导入投递记录</h3>
+    <div style="font-size:12px;color:#6b7280;line-height:1.7;margin-bottom:12px;">
+      填写你的飞书应用凭证并粘贴秋招投递多维表格链接，系统会读取其中的「公司」和「岗位」列。<br>
+      <strong style="color:#4338CA;">前提：</strong>需把该飞书应用添加为多维表格的协作者，并开通 <code>bitable:app:readonly</code> 权限。
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
+      <div class="jd-field">
+        <label>App ID</label>
+        <input id="feishuAppId" type="text" placeholder="cli_xxxxxxxxxxxx" style="width:100%;">
+      </div>
+      <div class="jd-field">
+        <label>App Secret</label>
+        <input id="feishuAppSecret" type="password" placeholder="应用密钥" style="width:100%;">
+      </div>
+    </div>
+    <div style="margin-bottom:10px;">
+      <button class="file-btn" style="background:#EEF2FF;color:#4338CA;border-color:#4338CA;" onclick="testFeishuConnection()">测试连接</button>
+      <span id="feishuConnStatus" style="font-size:11.5px;color:#6b7280;margin-left:8px;"></span>
+    </div>
+    <div class="addsec-custom" style="margin-bottom:10px;">
+      <label style="font-size:12px;color:#555;">多维表格链接</label>
+      <input id="feishuUrl" type="text" placeholder="粘贴飞书多维表格链接，如 https://xxx.feishu.cn/base/xxxxx" style="width:100%;margin-top:4px;">
+    </div>
+    <div id="feishuStatus" style="font-size:12px;color:#6b7280;min-height:18px;"></div>
+    <div id="feishuRecordList" style="max-height:220px;overflow-y:auto;margin:8px 0;border:1px solid #e5e7eb;border-radius:6px;"></div>
+    <div class="addsec-actions">
+      <label style="font-size:11.5px;color:#6b7280;display:flex;align-items:center;gap:4px;">
+        <input type="checkbox" id="feishuRemember" checked> 记住凭证（仅存本地浏览器）
+      </label>
+      <div style="flex:1;"></div>
+      <button class="btn btn-reset" onclick="document.getElementById('feishuModal').classList.remove('active')">取消</button>
+      <button class="btn btn-export" id="feishuFetchBtn" onclick="fetchFeishuRecords()">读取记录</button>
+    </div>
+  </div>
+</div>
+
+<!--  AI 设置弹窗 -->
+<div class="jd-modal" id="aiModal">
+  <div class="jd-modal-content" style="max-width:520px;">
+    <div class="jd-header">
+      <h3> AI 服务说明</h3>
+      <button class="jd-close" onclick="document.getElementById('aiModal').classList.remove('active')"></button>
+    </div>
+    <div class="jd-body">
+      <div style="background:#ECFDF5;border:1px solid #A7F3D0;border-radius:8px;padding:16px;font-size:13px;color:#065F46;line-height:1.8;">
+        <strong>AI 模型由服务端统一配置（智谱 GLM）。</strong><br>
+        您无需填写 API Key，即可使用 AI 改写功能。<br>
+        简历内容仅在当次请求期间存在于内存，处理完成后立即删除，不落库、不用于训练。
+      </div>
+      <div style="margin-top:14px;font-size:13px;color:#374151;line-height:1.8;">
+        <strong>使用限制：</strong><br>
+        · 未登录用户：每 IP 每日 10 次，每分钟 2 次<br>
+        · 全站每日总上限 1000 次<br>
+        · 单次输入不超过 5000 字符
+      </div>
+      <div style="margin-top:14px;font-size:13px;">
+        详细隐私说明请查看 <a href="/privacy" target="_blank" style="color:#1f6feb;">《隐私政策》</a>
+      </div>
+    </div>
+    <div class="jd-footer">
+      <button class="btn btn-reset" onclick="document.getElementById('aiModal').classList.remove('active')">关闭</button>
+    </div>
+  </div>
+</div>
+
+<!--  JD 智能匹配分析弹窗 -->
+<div class="jd-modal" id="jdModal">
+  <div class="jd-modal-content">
+    <div class="jd-header">
+      <h3> JD 智能匹配分析 & 定向改写</h3>
+      <button class="jd-close" onclick="closeJD()">✕</button>
+    </div>
+    <div class="jd-body" id="jdBody">
+      <!-- 输入区 -->
+      <div class="jd-section-title"><span class="num">1</span> 填写公司与岗位</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:8px;">
+        <div class="jd-field">
+          <label>目标公司</label>
+          <input type="text" id="jdCompany" placeholder="例如：字节跳动">
+        </div>
+        <div class="jd-field">
+          <label>目标岗位</label>
+          <input type="text" id="jdPosition" placeholder="例如：产品运营实习生">
+        </div>
+      </div>
+      <div style="margin-bottom:14px;">
+        <button class="file-btn" style="background:#EEF2FF;color:#4338CA;border-color:#4338CA;" onclick="openFeishuImport()"> 从飞书表格导入（秋招投递表）</button>
+        <span class="hint" style="margin-left:6px;">也可手动填写上方字段</span>
+      </div>
+
+      <div class="jd-section-title"><span class="num">2</span> 输入 JD 岗位描述</div>
+      <div class="jd-field" style="margin-bottom:14px;">
+        <label>粘贴 JD 文字（优先）</label>
+        <textarea id="jdText" placeholder="粘贴完整的岗位描述 / Job Description..."></textarea>
+        <div class="file-row">
+          <label class="file-btn"> 上传 JD 文件（PDF / Word / TXT）<input type="file" accept=".pdf,.docx,.doc,.txt" onchange="handleJDUpload(this)"></label>
+          <label class="file-btn" style="background:#F0FDFA;color:#0F766E;border-color:#0F766E;"> 截图识别 JD<input type="file" accept="image/*" capture="environment" onchange="handleJDScreenshot(this)"></label>
+          <span class="file-name" id="jdFileName"></span>
+          <button class="file-btn" style="background:#FEE2E2;color:#B91C1C;border-color:#B91C1C;" onclick="jdText.value=''; jdFileName.textContent=''">清空</button>
+        </div>
+      </div>
+
+      <div class="jd-section-title"><span class="num">3</span> 简历来源（默认抓当前页面）</div>
+      <div class="jd-field" style="margin-bottom:14px;">
+        <textarea id="resumeText" placeholder="点击下方按钮自动提取当前简历内容，也可手动粘贴/上传自己的简历..." readonly></textarea>
+        <div class="file-row">
+          <span class="rb-label" style="margin-right:2px;">范围</span>
+          <select class="rb-select" id="resumeScope" style="height:24px;font-size:11px;" onchange="extractResume()">
+            <option value="all">简历全部</option>
+            <option value="header">仅头部信息（姓名+联系方式）</option>
+            <option value="education">仅教育背景</option>
+            <option value="internship">仅实习经历</option>
+            <option value="projects">仅项目经历</option>
+            <option value="skills">仅技能与证书</option>
+          </select>
+          <button class="file-btn" onclick="extractResume()"> 自动抓取当前简历</button>
+          <label class="file-btn"> 上传简历文件< input type="file" accept=".pdf,.docx,.txt" onchange="handleResumeUpload(this)"></label>
+        </div>
+        <div class="hint">支持 PDF / Word / TXT。纯前端解析，不上传任何服务器。</div>
+      </div>
+
+      <div class="jd-section-title"><span class="num">4</span> 润色方向（可选，支持多选）</div>
+      <div class="jd-field" style="margin-bottom:14px;">
+        <input type="text" id="jdPrompt" placeholder="点击下方标签多选，或手动输入自定义方向...">
+        <div class="chips">
+          <div class="chip" onclick="toggleChip(this,'偏向数据分析岗位，突出数据成果')">偏向数据</div>
+          <div class="chip" onclick="toggleChip(this,'突出产品运营和用户增长能力')">突出运营</div>
+          <div class="chip" onclick="toggleChip(this,'强调AIGC/AI产品相关经验')">强调AI</div>
+          <div class="chip" onclick="toggleChip(this,'压缩到一页，保持精炼')">精简一页</div>
+          <div class="chip" onclick="toggleChip(this,'突出管理能力和跨部门协调')">管理能力</div>
+        </div>
+        <div class="hint">点击标签可多选组合，再次点击取消。已选方向会自动填入上方输入框。</div>
+      </div>
+
+      <!-- 结果区（初始隐藏） -->
+      <div class="jd-result-section" id="jdResult">
+        <div class="jd-loading" id="jdLoading"> 正在解析 JD 并分析匹配度...（约 2 秒）</div>
+        <div id="jdResultContent" style="display:none;">
+          <!-- 分数圆环 + 描述 -->
+          <div class="jd-score-row" id="jdScoreRow"></div>
+
+          <!-- JD 结构化提取 -->
+          <div style="font-size:13px;font-weight:bold;color:var(--primary);margin:14px 0 8px;"> JD 结构化解析</div>
+          <div class="jd-struct" id="jdStruct"></div>
+
+          <!-- 匹配三栏 -->
+          <div style="font-size:13px;font-weight:bold;color:var(--primary);margin:14px 0 8px;"> 关键词匹配分析</div>
+          <div class="jd-match-columns" id="jdMatch"></div>
+
+          <!-- 改写建议 -->
+          <div style="font-size:13px;font-weight:bold;color:var(--primary);margin:14px 0 8px;"> 定向改写建议</div>
+          <div class="jd-rewrite-area" id="jdRewrite"></div>
+
+          <!-- 一键应用 -->
+          <div style="display:flex;gap:8px;margin-top:12px;">
+            <button class="btn btn-export" onclick="applyRewrites()"> 一键应用改写建议到简历</button>
+            <button class="btn btn-reset" onclick="copyReport()"> 复制分析报告</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="jd-footer">
+      <span id="aiRemaining" style="font-size:12px;color:#6b7280;margin-right:auto;"></span>
+      <button class="btn btn-reset" onclick="closeJD()">关闭</button>
+      <button class="btn btn-ai" onclick="runJDAnalyze()"> 开始分析</button>
+    </div>
+  </div>
+</div>
+
+<!-- AI 弹窗 -->
+<div class="ai-modal" id="aiModal">
+  <div class="ai-modal-content">
+    <h3> AI 润色助手</h3>
+    <div class="ai-target" id="aiTargetInfo">提示：开启编辑后点击简历中的某个板块再打开 AI 更精准</div>
+    <label>当前内容（可手动修改）</label>
+    <textarea id="aiCurrentText" rows="5"></textarea>
+    <label>润色提示词</label>
+    <input type="text" id="aiPrompt" placeholder="让这段更突出数据成果，用 STAR 结构重写">
+    <div class="chips">
+      <div class="chip" onclick="setPrompt('让成果量化，多用数据和百分比')">数据量化</div>
+      <div class="chip" onclick="setPrompt('用 STAR 法则重写')">STAR 结构</div>
+      <div class="chip" onclick="setPrompt('压缩到 70%，更精炼')">精简压缩</div>
+      <div class="chip" onclick="setPrompt('突出产品运营能力')">突出运营</div>
+      <div class="chip" onclick="setPrompt('改得更像大厂风格')">大厂风格</div>
+    </div>
+    <div style="margin-top:10px;">
+      <div id="aiLoading" style="display:none;color:var(--primary);"><span class="ai-loading"></span>AI 思考中...</div>
+      <div class="preview-box" id="aiResult" style="display:none;"></div>
+    </div>
+    <div class="actions">
+      <button class="btn btn-reset" onclick="closeAI()">取消</button>
+      <button class="btn btn-ai" onclick="runPolish()"> 生成</button>
+      <button class="btn btn-export" id="aiApplyBtn" onclick="applyResult()" style="display:none"> 应用到简历</button>
+    </div>
+  </div>
+</div>
+
+<!-- 隐私同意弹窗 -->
+<div class="ai-modal" id="consentModal">
+  <div class="ai-modal-content" style="max-width:480px;">
+    <h3> 隐私授权确认</h3>
+    <div style="font-size:13px;line-height:1.8;color:#374151;background:#f9fafb;padding:14px;border-radius:8px;margin:12px 0;">
+      使用 AI 改写功能时，您的简历内容和岗位描述将被发送至第三方 AI 服务商（智谱 GLM）进行处理，处理完成后立即删除，不落库、不用于训练。<br><br>
+      详细说明请查看 <a href="/privacy" target="_blank" style="color:#1f6feb;">《隐私政策》</a>。
+    </div>
+    <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;font-size:13px;color:#374151;">
+      <input type="checkbox" id="consentCheckbox" style="margin-top:3px;">
+      <span>我已阅读并同意《隐私政策》，同意将简历内容发送至第三方 AI 服务（智谱）用于处理</span>
+    </label>
+    <div class="actions" style="margin-top:16px;">
+      <button class="btn btn-reset" id="consentCancelBtn">取消</button>
+      <button class="btn btn-ai" id="consentConfirmBtn"> 同意并继续</button>
+    </div>
+  </div>
+</div>
+
+<!-- 导出 loading -->
+<div class="export-overlay" id="exportOverlay">
+  <div class="spinner"></div>
+  <div class="tip">正在生成 PDF，请稍候...</div>
+</div>
+
+<script>
+  const body = document.body;
+
+  // ========== 主色变更 ==========
+  function setPrimaryColor(hex, el) {
+    const root = document.documentElement;
+    root.style.setProperty('--primary', hex);
+    root.style.setProperty('--primary-light', shadeColor(hex, 85));
+    root.style.setProperty('--primary-dark', shadeColor(hex, -20));
+    root.style.setProperty('--divider-deep', hex);
+    root.style.setProperty('--dot-color', hex);
+    root.style.setProperty('--link-color', hex);
+    root.style.setProperty('--text-muted', '#7A7A7A');
+    if (el) {
+      document.querySelectorAll('.swatch').forEach(s => s.classList.remove('active'));
+      el.classList.add('active');
+    }
+  }
+  function shadeColor(color, percent) {
+    const num = parseInt(color.replace('#',''), 16);
+    const amt = Math.round(2.55 * percent);
+    const R = Math.max(0, Math.min(255, (num >> 16) + amt));
+    const G = Math.max(0, Math.min(255, ((num >> 8) & 0x00FF) + amt));
+    const B = Math.max(0, Math.min(255, (num & 0x0000FF) + amt));
+    return '#' + ((R << 16) | (G << 8) | B).toString(16).padStart(6, '0');
+  }
+
+  // ========== 编辑模式 + 撤销 + 自动保存 ==========
+  let editMode = false, lastEditable = null;
+  const HISTORY_KEY = 'resume_edit_history';
+  const SAVE_KEY = 'resume_autosave_html';
+  const JD_INFO_KEY = 'resume_jd_info';
+  let history = [];
+  const MAX_HISTORY = 30;
+
+  function pushHistory() {
+    const snap = document.getElementById('resume').innerHTML;
+    // 避免连续相同的快照
+    if (history.length > 0 && history[history.length-1] === snap) return;
+    history.push(snap);
+    if (history.length > MAX_HISTORY) history.shift();
+    updateUndoBtn();
+  }
+  function undoEdit() {
+    // 如果有待保存的输入，立即落盘再撤销
+    if (historyDebounce) {
+      clearTimeout(historyDebounce);
+      historyDebounce = null;
+      pushHistory();
+    }
+    if (history.length < 2) return;
+    history.pop(); // 弹出当前
+    const prev = history[history.length - 1];
+    document.getElementById('resume').innerHTML = prev;
+    if (editMode) {
+      ensureEditable();
+      document.querySelectorAll('#resume [contenteditable]').forEach(el => el.setAttribute('contenteditable', 'true'));
+      // 撤销恢复的删除按钮丢失了事件绑定，先移除再重新添加
+      document.querySelectorAll('#resume .section-del').forEach(b => b.remove());
+      refreshSectionDelButtons();
+    }
+    updateUndoBtn();
+    showSaveStatus('已撤销到上一步');
+    autoFitOnePage();
+  }
+  function updateUndoBtn() {
+    const btn = document.getElementById('undoBtn');
+    if (history.length >= 2) {
+      btn.disabled = false; btn.style.opacity = '1'; btn.style.cursor = 'pointer';
+    } else {
+      btn.disabled = true; btn.style.opacity = '0.4'; btn.style.cursor = 'not-allowed';
+    }
+  }
+  function showSaveStatus(msg) {
+    const el = document.getElementById('saveStatus');
+    el.textContent = msg; el.style.display = 'inline-block';
+    clearTimeout(window._saveTimer);
+    window._saveTimer = setTimeout(() => { el.style.display = 'none'; }, 1500);
+  }
+  function autoSave() {
+    try {
+      const html = document.getElementById('resume').innerHTML;
+      localStorage.setItem(SAVE_KEY, html);
+      showSaveStatus('已自动保存 ' + new Date().toLocaleTimeString());
+    } catch(e) { /* localStorage 可能被禁用 */ }
+  }
+  function loadAutosave() {
+    try {
+      const saved = localStorage.getItem(SAVE_KEY);
+      if (saved) {
+        document.getElementById('resume').innerHTML = saved;
+        showSaveStatus('已恢复上次编辑');
+      }
+    } catch(e) {}
+  }
+
+  function toggleEdit() {
+    editMode = !editMode;
+    body.classList.toggle('editing', editMode);
+    document.getElementById('editBtn').textContent = editMode ? ' 预览模式' : ' 开启编辑';
+    // 添加板块按钮仅在编辑模式显示
+    document.getElementById('addSectionBtn').style.display = editMode ? '' : 'none';
+    if (editMode) {
+      // 恢复上次自动保存
+      loadAutosave();
+      // 确保所有文本元素都有 contenteditable 属性（覆盖原始+上传+自定义板块）
+      ensureEditable();
+      document.querySelectorAll('#resume [contenteditable]').forEach(el => {
+        el.setAttribute('contenteditable', 'true');
+      });
+      // 给每个板块加删除按钮
+      refreshSectionDelButtons();
+      // 记录初始快照（必须在所有 DOM 修改之后，保证基线是真实加载的内容）
+      history = [];
+      pushHistory();
+    } else {
+      // 退出编辑：关闭整块编辑
+      if (blockEditMode) toggleBlockEdit();
+      document.querySelectorAll('#resume [contenteditable]').forEach(el => {
+        el.setAttribute('contenteditable', 'false');
+      });
+      // 移除板块删除按钮
+      document.querySelectorAll('#resume .section-del').forEach(b => b.remove());
+    }
+    updateUndoBtn();
+    autoFitOnePage();
+  }
+  // 确保所有承载文本的元素都带有 contenteditable 属性，便于统一开关
+  function ensureEditable() {
+    const sel = '.name, .intent-pill, .contact-bar .val, .contact-bar .label, ' +
+                '.section-title-cn, .section-title-en, ' +
+                '.school span, .school .major, .school .degree, ' +
+                '.company, .role, .date, .project-tag, ' +
+                '.exp-desc, .exp-desc li, ' +
+                '.skill-name, .skill-val, ' +
+                '.section-body, .section-body li, ' +
+                '.header-line, .uploaded-full-text';
+    document.querySelectorAll('#resume ' + sel).forEach(el => {
+      if (!el.hasAttribute('contenteditable')) el.setAttribute('contenteditable', 'false');
+    });
+  }
+  // 给每个 section 右上角加删除按钮（编辑模式下 hover 显示）
+  function refreshSectionDelButtons() {
+    document.querySelectorAll('#resume .section').forEach(sec => {
+      if (!sec.querySelector('.section-del')) {
+        const btn = document.createElement('button');
+        btn.className = 'section-del';
+        btn.type = 'button';
+        btn.textContent = '×';
+        btn.title = '删除该板块';
+        btn.onclick = (e) => { e.stopPropagation(); deleteSection(sec); };
+        sec.appendChild(btn);
+      }
+    });
+  }
+
+  // ========== 添加 / 删除板块 ==========
+  let blockEditMode = false;
+  function openAddSectionModal() {
+    if (!editMode) { alert('请先开启编辑模式'); return; }
+    document.getElementById('addSecName').value = '';
+    document.getElementById('addSectionModal').classList.add('active');
+    setTimeout(() => document.getElementById('addSecName').focus(), 50);
+  }
+  function addSectionFromInput() {
+    const name = document.getElementById('addSecName').value.trim();
+    if (!name) { alert('请输入板块名称'); return; }
+    addSection(name);
+    document.getElementById('addSectionModal').classList.remove('active');
+  }
+  function addSection(name) {
+    const inner = document.querySelector('#resume .resume-inner');
+    if (!inner) return;
+    const en = name.replace(/[^\w]/g,'').toUpperCase() || 'SECTION';
+    const sec = document.createElement('div');
+    sec.className = 'section';
+    sec.innerHTML = `
+      <div class="section-title">
+        <span class="section-bar"></span>
+        <span class="section-title-cn" contenteditable="false">${name}</span>
+        <span class="section-title-en" contenteditable="false">${en}</span>
+      </div>
+      <div class="section-divider"></div>
+      <div class="section-divider-light"></div>
+      <div class="section-body" contenteditable="false" style="white-space:pre-wrap;font-size:9.2pt;line-height:1.7;">在此输入${name}内容...</div>`;
+    inner.appendChild(sec);
+    // 同步编辑状态与删除按钮
+    if (editMode) {
+      sec.querySelectorAll('[contenteditable]').forEach(el => el.setAttribute('contenteditable', 'true'));
+      refreshSectionDelButtons();
+    }
+    originalSectionOrder = null; // 重置模板缓存
+    pushHistory();
+    autoSave();
+    autoFitOnePage();
+  }
+  function deleteSection(sec) {
+    if (!confirm('确定删除该板块吗？此操作可通过"撤销上一步"恢复。')) return;
+    sec.remove();
+    originalSectionOrder = null;
+    pushHistory();
+    autoSave();
+    autoFitOnePage();
+  }
+
+  // ========== 整块编辑模式 ==========
+  function toggleBlockEdit() {
+    if (!editMode) { alert('请先开启编辑模式'); return; }
+    blockEditMode = !blockEditMode;
+    const btn = document.getElementById('blockEditBtn');
+    btn.classList.toggle('active', blockEditMode);
+    btn.textContent = blockEditMode ? '退出整块' : '整块编辑';
+    document.body.classList.toggle('block-editing', blockEditMode);
+
+    document.querySelectorAll('#resume .section, #resume .resume-header').forEach(blk => {
+      if (blockEditMode) {
+        // 整块可编辑，内部小块不可编辑
+        blk.setAttribute('contenteditable', 'true');
+        blk.querySelectorAll('[contenteditable]').forEach(el => el.setAttribute('contenteditable', 'false'));
+      } else {
+        // 恢复小块编辑
+        blk.removeAttribute('contenteditable');
+        ensureEditable();
+        document.querySelectorAll('#resume [contenteditable]').forEach(el => el.setAttribute('contenteditable', 'true'));
+      }
+    });
+  }
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') document.getElementById('addSectionModal').classList.remove('active');
+  });
+  window.openAddSectionModal = openAddSectionModal;
+  window.addSectionFromInput = addSectionFromInput;
+  window.addSection = addSection;
+  window.deleteSection = deleteSection;
+  window.toggleBlockEdit = toggleBlockEdit;
+  document.addEventListener('focusin', e => {
+    if (editMode && e.target.matches('[contenteditable="true"]')) lastEditable = e.target;
+  });
+  // 编辑时自动保存 + 历史记录
+  let saveDebounce = null;
+  let historyDebounce = null;
+  document.addEventListener('input', e => {
+    if (!editMode) return;
+    if (e.target.matches('#resume [contenteditable="true"]')) {
+      // 防抖：连续输入只存一条历史，避免撤销时逐字回退
+      clearTimeout(historyDebounce);
+      historyDebounce = setTimeout(pushHistory, 500);
+      clearTimeout(saveDebounce);
+      saveDebounce = setTimeout(autoSave, 250);
+      clearTimeout(window._fitTimer);
+      window._fitTimer = setTimeout(autoFitOnePage, 400);
+    }
+  });
+  // Ctrl/Cmd+Z 撤销
+  document.addEventListener('keydown', e => {
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && !e.shiftKey) {
+      e.preventDefault();
+      if (editMode) undoEdit();
+    }
+  });
+
+  // ========== 富文本执行 ==========
+  function execCmd(cmd, val) {
+    if (!editMode) { alert('请先开启编辑模式'); return; }
+    if (!lastEditable) { alert('请先点击要编辑的区域'); return; }
+    lastEditable.focus();
+    document.execCommand(cmd, false, val || null);
+  }
+  function setLineHeight(val) {
+    if (!editMode || !lastEditable) return;
+    lastEditable.focus();
+    lastEditable.style.lineHeight = (val / 100).toString();
+  }
+
+  // ========== AI 润色 ==========
+  function openAI() {
+    const modal = document.getElementById('aiModal');
+    document.getElementById('aiLoading').style.display = 'none';
+    document.getElementById('aiResult').style.display = 'none';
+    document.getElementById('aiApplyBtn').style.display = 'none';
+    if (lastEditable) {
+      document.getElementById('aiTargetInfo').textContent = '目标：' + (lastEditable.innerText || '').substring(0, 25) + '...';
+      document.getElementById('aiCurrentText').value = lastEditable.innerText || '';
+    } else {
+      document.getElementById('aiTargetInfo').textContent = '提示：开启编辑后点击简历中的某个板块再打开 AI 更精准';
+      document.getElementById('aiCurrentText').value = '';
+    }
+    modal.classList.add('active');
+  }
+  function closeAI() { document.getElementById('aiModal').classList.remove('active'); }
+  function setPrompt(t) { document.getElementById('aiPrompt').value = t; }
+  function runPolish() {
+    const text = document.getElementById('aiCurrentText').value;
+    const prompt = document.getElementById('aiPrompt').value;
+    if (!text.trim()) { alert('请输入要润色的内容'); return; }
+    const loading = document.getElementById('aiLoading');
+    const result = document.getElementById('aiResult');
+    const applyBtn = document.getElementById('aiApplyBtn');
+    loading.style.display = 'inline'; result.style.display = 'none'; applyBtn.style.display = 'none';
+    setTimeout(() => {
+      loading.style.display = 'none';
+      result.textContent = polish(text, prompt);
+      result.style.display = 'block';
+      applyBtn.style.display = 'inline-block';
+    }, 800 + Math.random() * 500);
+  }
+  function polish(text, prompt) {
+    let r = text;
+    const has = k => prompt.includes(k);
+    if (has('数据') || has('量化')) r = r.replace(/很多|大量/g,'超').replace(/协助/g,'赋能').replace(/降低/g,'压缩').replace(/提高|提升/g,'显著提升');
+    if (has('STAR') || has('专业')) if (r.includes('：')) r = r.replace(/([^：\n]+)：/g,(m,p1)=>{const k=p1.trim(); if(/问题|背景/i.test(k))return'【S】'+k+'：'; if(/方案|设计/i.test(k))return'【T】'+k+'：'; if(/执行|落地/i.test(k))return'【A】'+k+'：'; if(/结果|成效|表现/i.test(k))return'【R】'+k+'：'; return m;});
+    if (has('精简') || has('压缩')) r = r.replace(/为了|为明确|为提升/g,'').replace(/能够|可以成功|最终/g,'');
+    if (has('运营')) r = r.replace(/做了/g,'策划并落地').replace(/负责/g,'牵头负责').replace(/参与/g,'深度参与');
+    if (has('大厂')) r = r.replace(/问题发现/g,'痛点洞察').replace(/方案设计/g,'策略制定').replace(/竞品研究/g,'竞品Benchmark');
+    r = r.replace(/  +/g,' ');
+    return r;
+  }
+  function applyResult() {
+    const result = document.getElementById('aiResult').textContent;
+    if (!lastEditable) { alert('请先开启编辑模式并点击简历中的某个板块'); return; }
+    lastEditable.innerText = result;
+    lastEditable.scrollIntoView({ behavior:'smooth', block:'center' });
+    closeAI();
+    autoFitOnePage();
+  }
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') closeAI(); });
+
+  // ========== 自动缩放一页 A4 ==========
+  function autoFitOnePage() {
+    const resume = document.getElementById('resume');
+    const inner = document.querySelector('.resume-inner');
+    inner.style.transformOrigin = 'top center';
+    inner.style.transform = 'scale(1)';
+    resume.style.height = '297mm';
+    resume.style.overflow = 'visible';
+    void inner.offsetHeight;
+    const containerH = resume.clientHeight;
+    const contentH = inner.scrollHeight;
+    if (contentH > containerH + 2) {
+      const scale = containerH / contentH;
+      inner.style.transform = `scale(${scale.toFixed(4)})`;
+      resume.style.height = containerH + 'px';
+    } else {
+      resume.style.height = '297mm';
+    }
+    resume.style.overflow = 'hidden';
+  }
+
+  // ========== PDF 导出 ==========
+  async function exportPDF() {
+    if (!window.html2canvas || !window.jspdf) { alert('PDF 导出库加载失败，请检查网络后刷新页面重试'); return; }
+    if (editMode) toggleEdit();
+
+    const overlay = document.getElementById('exportOverlay');
+    overlay.classList.add('active');
+    const tip = document.querySelector('.export-overlay .tip');
+    tip.textContent = '正在渲染简历...';
+
+    try {
+      const resume = document.getElementById('resume');
+      const origH = resume.style.height;
+      const origOverflow = resume.style.overflow;
+      const origTransform = document.querySelector('.resume-inner').style.transform;
+      // 临时取消缩放让 html2canvas 渲染完整
+      document.querySelector('.resume-inner').style.transform = 'scale(1)';
+      resume.style.height = 'auto';
+      resume.style.overflow = 'visible';
+
+      const canvas = await html2canvas(resume, { scale: 2, useCORS: true, allowTaint: true, backgroundColor: '#ffffff', logging: false });
+
+      // 还原
+      resume.style.height = origH;
+      resume.style.overflow = origOverflow;
+      document.querySelector('.resume-inner').style.transform = origTransform;
+      autoFitOnePage();
+
+      tip.textContent = '正在生成 PDF...';
+      const imgData = canvas.toDataURL('image/jpeg', 0.92);
+      const { jsPDF } = window.jspdf;
+      const pdf = new jsPDF({ unit: 'mm', format: 'a4', orientation: 'portrait' });
+      const pdfW = pdf.internal.pageSize.getWidth();
+      const ratio = canvas.height / canvas.width;
+      let finalH = pdfW * ratio;
+
+      if (finalH <= pdf.internal.pageSize.getHeight()) {
+        pdf.addImage(imgData, 'JPEG', 0, 0, pdfW, finalH);
+      } else {
+        const pages = Math.ceil(finalH / pdf.internal.pageSize.getHeight());
+        for (let p = 0; p < pages; p++) {
+          if (p > 0) pdf.addPage();
+          const srcY = (p * pdf.internal.pageSize.getHeight() / finalH) * canvas.height;
+          const srcH = Math.min(pdf.internal.pageSize.getHeight(), finalH - p * pdf.internal.pageSize.getHeight()) / finalH * canvas.height;
+          const pageCanvas = document.createElement('canvas');
+          pageCanvas.width = canvas.width; pageCanvas.height = srcH;
+          const ctx = pageCanvas.getContext('2d');
+          ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, pageCanvas.width, pageCanvas.height);
+          ctx.drawImage(canvas, 0, srcY, canvas.width, srcH, 0, 0, canvas.width, srcH);
+          pdf.addImage(pageCanvas.toDataURL('image/jpeg', 0.9), 'JPEG', 0, 0, pdfW, srcH / finalH * finalH);
+        }
+      }
+      tip.textContent = '正在下载...';
+      // 文件名：姓名-学校-投递岗位.pdf
+      const name = (document.querySelector('.name')?.innerText || '简历').trim().split('\n')[0].trim();
+      // 学校：取第一个 .school 的学校名（去掉专业和学历）
+      const schoolEl = document.querySelector('.school');
+      let edu = '';
+      if (schoolEl) {
+        edu = (schoolEl.innerText || '').trim();
+        // 去掉 "· 专业" 及之后的内容
+        edu = edu.replace(/\s*[·•]\s*.*/, '').split('\n')[0].trim();
+      }
+      // 投递岗位：优先取 JD 中填写的目标岗位，否则取简历求职意向
+      let position = '';
+      try {
+        const jd = JSON.parse(localStorage.getItem(JD_INFO_KEY) || '{}');
+        position = (jd.position || '').trim();
+      } catch(e) {}
+      if (!position) {
+        const intent = (document.querySelector('.intent-pill')?.innerText || '').trim();
+        // 求职意向 · 产品运营实习生 → 产品运营实习生
+        const m = intent.match(/求职意向\s*[·•\-:：]\s*(.+)/);
+        if (m) position = m[1].trim();
+        else position = intent;
+      }
+      // 拼接：姓名-学校-投递岗位
+      let fname = name;
+      if (edu) fname += '-' + edu;
+      if (position) fname += '-' + position;
+      fname = (fname || '简历') + '.pdf';
+      // 清理非法文件名字符
+      fname = fname.replace(/[\\/:*?"<>|\r\n]/g, '_').replace(/\s+/g, ' ').trim();
+      pdf.save(fname);
+      setTimeout(() => overlay.classList.remove('active'), 500);
+    } catch (err) {
+      console.error(err);
+      overlay.classList.remove('active');
+      alert('PDF 导出失败：' + err.message);
+    }
+  }
+
+  // ========== 启动 ==========
+  window.addEventListener('load', () => {
+    autoFitOnePage();
+    setTimeout(autoFitOnePage, 500); // 等头像加载完
+  });
+  document.addEventListener('input', e => {
+    if (editMode && e.target.matches('[contenteditable="true"]')) {
+      clearTimeout(window._fitTimer);
+      window._fitTimer = setTimeout(autoFitOnePage, 400);
+    }
+  });
+  window.addEventListener('resize', autoFitOnePage);
+
+  // ================================================================
+  //  JD 智能匹配分析引擎（路线 A —— 纯前端，规则+关键词库）
+  // ================================================================
+
+  /* ========== 同义词库（匹配时把同义词归为同一概念） ========== */
+  const SYNONYM_MAP = {
+    '产品运营': ['产品运营', '运营', '产品经理', '产品策划', '产品设计', '产品实习生'],
+    '数据分析': ['数据分析', '数据分析师', '数据运营', 'BI', '商业分析'],
+    'SQL': ['SQL', 'sql', 'sql server', 'mysql', 'postgresql'],
+    'Excel': ['Excel', 'excel', '数据透视', 'vlookup', '函数'],
+    'Python': ['Python', 'python', 'pandas', 'numpy', 'matplotlib'],
+    'AIGC': ['AIGC', 'aigc', 'AI生成', '大模型', 'LLM', 'GenAI', '生成式AI'],
+    '用户增长': ['用户增长', '增长黑客', 'Growth', 'DAU', '留存', '转化'],
+    '竞品分析': ['竞品分析', '竞品调研', 'benchmark', 'Benchmark', '对标'],
+    '需求文档': ['需求文档', 'PRD', 'prd', 'MRD', '需求规格'],
+    'Axure': ['Axure', 'axure', '原型', 'Figma', 'figma'],
+    '飞书': ['飞书', 'Lark', 'lark', '飞书多维表格'],
+    '项目管理': ['项目管理', '项目协调', '项目跟进', 'PM', 'pm'],
+    '沟通协调': ['沟通', '协调', '跨部门', '团队协作', 'owner'],
+    '抗压能力': ['抗压', '压力管理', 'multi-task', '多任务'],
+    '快速学习': ['学习能力', '快速学习', '自驱', '自学'],
+    '用户调研': ['用户调研', '用户研究', 'UCD', '问卷', '访谈'],
+    '新媒体运营': ['新媒体', '小红书', '抖音', '公众号', '内容运营', '社媒', '短视频'],
+    '英语能力': ['英语', 'CET', '四六级', '6级', '4级', 'IELTS', 'TOEFL'],
+  };
+
+  /* ========== JD 结构化提取规则 ========== */
+  const JD_SECTION_RULES = [
+    { key: 'duties',  label: '岗位职责',  patterns: [/岗位职责|工作内容|工作职责|JD\b|Job Description/i, /你将负责|你将参与|你的日常/i] },
+    { key: 'hard',     label: '硬性要求',  patterns: [/任职要求|资格要求|岗位要求|职位要求|Requirements/i, /我们希望你|任职资格/i] },
+    { key: 'bonus',    label: '加分项',    patterns: [/加分项|优先|Bonus|Preferred|有以下经验者优先/i] },
+    { key: 'skills',   label: '技能关键词', patterns: [/技能要求|技术栈|专业技能|Skills/i, /熟练掌握|精通|熟悉|了解/i] },
+  ];
+
+  /* ========== 引擎核心 ========== */
+
+  function openJD() {
+    document.getElementById('jdModal').classList.add('active');
+    extractResume();
+    // 回填上次填的公司/岗位
+    try {
+      const jd = JSON.parse(localStorage.getItem(JD_INFO_KEY) || '{}');
+      if (jd.company) document.getElementById('jdCompany').value = jd.company;
+      if (jd.position) document.getElementById('jdPosition').value = jd.position;
+    } catch(e) {}
+  }
+  function closeJD() { document.getElementById('jdModal').classList.remove('active'); }
+
+  // ------- 文件解析 -------
+  async function parseFile(file) {
+    const name = file.name.toLowerCase();
+    const buf = await file.arrayBuffer();
+    try {
+      if (name.endsWith('.pdf')) {
+        const doc = await window['pdfjsLib'].getDocument({ data: buf }).promise;
+        let text = '';
+        for (let i = 1; i <= doc.numPages; i++) {
+          const page = await doc.getPage(i);
+          text += (await page.getTextContent()).items.map(it => it.str).join(' ') + '\n';
+        }
+        return text.trim();
+      } else if (name.endsWith('.docx') || name.endsWith('.doc')) {
+        const res = await window['mammoth'].extractRawText({ arrayBuffer: buf });
+        return res.value.trim();
+      } else {
+        return new TextDecoder().decode(buf).trim();
+      }
+    } catch (e) {
+      alert('文件解析失败：' + e.message);
+      return '';
+    }
+  }
+
+  async function handleJDUpload(input) {
+    const f = input.files[0]; if (!f) return;
+    document.getElementById('jdFileName').textContent = ' ' + f.name + ' (解析中...)';
+    const text = await parseFile(f);
+    document.getElementById('jdText').value = text;
+    document.getElementById('jdFileName').textContent = ' ' + f.name + ' ✓';
+  }
+  async function handleResumeUpload(input) {
+    const f = input.files[0]; if (!f) return;
+    const text = await parseFile(f);
+    document.getElementById('resumeText').value = text;
+  }
+
+  // ========== 飞书表格导入 ==========
+  const FEISHU_LS_KEY = 'feishu_credentials';
+  function loadFeishuCredentials() {
+    try {
+      const saved = JSON.parse(localStorage.getItem(FEISHU_LS_KEY) || '{}');
+      if (saved.app_id) document.getElementById('feishuAppId').value = saved.app_id;
+      if (saved.app_secret) document.getElementById('feishuAppSecret').value = saved.app_secret;
+    } catch (e) {}
+  }
+  function saveFeishuCredentials() {
+    const remember = document.getElementById('feishuRemember').checked;
+    const appId = document.getElementById('feishuAppId').value.trim();
+    const appSecret = document.getElementById('feishuAppSecret').value.trim();
+    if (remember && appId) {
+      localStorage.setItem(FEISHU_LS_KEY, JSON.stringify({ app_id: appId, app_secret: appSecret }));
+    } else {
+      localStorage.removeItem(FEISHU_LS_KEY);
+    }
+  }
+  function openFeishuImport() {
+    document.getElementById('feishuModal').classList.add('active');
+    loadFeishuCredentials();
+    document.getElementById('feishuUrl').value = '';
+    document.getElementById('feishuStatus').textContent = '';
+    document.getElementById('feishuConnStatus').textContent = '';
+    document.getElementById('feishuRecordList').innerHTML = '';
+  }
+  async function testFeishuConnection() {
+    const appId = document.getElementById('feishuAppId').value.trim();
+    const appSecret = document.getElementById('feishuAppSecret').value.trim();
+    const statusEl = document.getElementById('feishuConnStatus');
+    if (!appId || !appSecret) {
+      statusEl.textContent = '请先填写 App ID 和 App Secret';
+      statusEl.style.color = '#B91C1C';
+      return;
+    }
+    statusEl.textContent = '正在测试连接...';
+    statusEl.style.color = '#6b7280';
+    try {
+      const resp = await fetch('/api/feishu/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ app_id: appId, app_secret: appSecret }),
+      });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.detail || '连接失败');
+      statusEl.textContent = '✓ 连接成功，凭证有效';
+      statusEl.style.color = '#059669';
+      saveFeishuCredentials();
+    } catch (e) {
+      statusEl.textContent = '✗ 连接失败：' + e.message;
+      statusEl.style.color = '#B91C1C';
+    }
+  }
+  async function fetchFeishuRecords() {
+    const url = document.getElementById('feishuUrl').value.trim();
+    const appId = document.getElementById('feishuAppId').value.trim();
+    const appSecret = document.getElementById('feishuAppSecret').value.trim();
+    const statusEl = document.getElementById('feishuStatus');
+    const listEl = document.getElementById('feishuRecordList');
+    const btn = document.getElementById('feishuFetchBtn');
+    if (!url) { statusEl.textContent = '请先粘贴飞书多维表格链接'; statusEl.style.color = '#B91C1C'; return; }
+    btn.disabled = true; btn.textContent = '读取中...';
+    statusEl.style.color = '#6b7280';
+    statusEl.textContent = '正在连接飞书表格...';
+    listEl.innerHTML = '';
+    try {
+      const body = { bitable_url: url };
+      if (appId && appSecret) { body.app_id = appId; body.app_secret = appSecret; }
+      const resp = await fetch('/api/feishu/bitable/records', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.detail || '读取失败');
+      saveFeishuCredentials();
+      const records = data.records || [];
+      if (records.length === 0) {
+        statusEl.textContent = '未识别到公司/岗位列，请确认表格中有「公司」「岗位」字段';
+        statusEl.style.color = '#B91C1C';
+      } else {
+        statusEl.textContent = `共读取到 ${records.length} 条投递记录，点击选择：`;
+        statusEl.style.color = '#059669';
+        listEl.innerHTML = records.map((r, i) => `
+          <div style="padding:8px 12px;border-bottom:1px solid #f3f4f6;cursor:pointer;display:flex;justify-content:space-between;align-items:center;" onclick="selectFeishuRecord(${i})" data-idx="${i}">
+            <div><strong>${r.company || '(未填公司)'}</strong><span style="color:#6b7280;margin-left:8px;">${r.position || '(未填岗位)'}</span></div>
+            <span style="font-size:11px;color:#1f6feb;">选择 →</span>
+          </div>`).join('');
+        window._feishuRecords = records;
+      }
+    } catch (e) {
+      statusEl.textContent = '读取失败：' + e.message;
+      statusEl.style.color = '#B91C1C';
+    } finally {
+      btn.disabled = false; btn.textContent = '读取记录';
+    }
+  }
+  function selectFeishuRecord(idx) {
+    const r = (window._feishuRecords || [])[idx];
+    if (!r) return;
+    if (r.company) document.getElementById('jdCompany').value = r.company;
+    if (r.position) document.getElementById('jdPosition').value = r.position;
+    document.getElementById('feishuModal').classList.remove('active');
+  }
+  window.openFeishuImport = openFeishuImport;
+  window.testFeishuConnection = testFeishuConnection;
+  window.fetchFeishuRecords = fetchFeishuRecords;
+  window.selectFeishuRecord = selectFeishuRecord;
+
+  // ========== JD 截图 OCR 识别 ==========
+  async function handleJDScreenshot(input) {
+    const f = input.files[0]; if (!f) return;
+    const jdFileName = document.getElementById('jdFileName');
+    jdFileName.textContent = ' ' + f.name + ' (识别中...)';
+    try {
+      // 转 base64
+      const dataUrl = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = reject;
+        reader.readAsDataURL(f);
+      });
+      // 去掉 data:image/...;base64, 前缀
+      const base64 = dataUrl.split(',')[1];
+      const resp = await fetch('/api/ai/ocr', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ image_base64: base64 }),
+      });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.detail || '识别失败');
+      const existing = document.getElementById('jdText').value;
+      document.getElementById('jdText').value = existing ? existing + '\n\n' + data.content : data.content;
+      jdFileName.textContent = ' ' + f.name + ' ✓';
+    } catch (e) {
+      jdFileName.textContent = ' 识别失败：' + e.message;
+      jdFileName.style.color = '#B91C1C';
+      setTimeout(() => { jdFileName.style.color = ''; }, 3000);
+    }
+  }
+  window.handleJDScreenshot = handleJDScreenshot;
+
+  function extractResume() {
+    const scope = document.getElementById('resumeScope')?.value || 'all';
+    const resume = document.getElementById('resume');
+    const clone = resume.cloneNode(true);
+    clone.querySelectorAll('[contenteditable]').forEach(n => n.removeAttribute('contenteditable'));
+    clone.querySelectorAll('.section-del').forEach(n => n.remove());
+
+    // 根据 scope 直接 remove 掉不匹配的 section（clone 没挂到文档上，display:none 无效）
+    if (scope !== 'all') {
+      const allSections = clone.querySelectorAll('.section, .resume-header');
+      allSections.forEach(s => {
+        let keep = false;
+        if (scope === 'header') {
+          keep = s.classList.contains('resume-header');
+        } else if (scope === 'education') {
+          keep = s.innerText.includes('EDUCATION');
+        } else if (scope === 'internship') {
+          keep = s.innerText.includes('INTERNSHIP');
+        } else if (scope === 'projects') {
+          keep = s.innerText.includes('PROJECTS');
+        } else if (scope === 'skills') {
+          keep = s.innerText.includes('SKILLS');
+        }
+        if (!keep) s.remove();
+      });
+    }
+    const text = clone.innerText
+      .replace(/\s+\n/g, '\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+    document.getElementById('resumeText').value = text;
+  }
+
+  // ------- 多选 chip 切换 -------
+  const selectedChips = new Map(); // chipDOM -> value
+  function toggleChip(chipEl, value) {
+    const input = document.getElementById('jdPrompt');
+    if (chipEl.classList.contains('chip-active')) {
+      // 取消选择
+      chipEl.classList.remove('chip-active');
+      selectedChips.delete(chipEl);
+    } else {
+      chipEl.classList.add('chip-active');
+      selectedChips.set(chipEl, value);
+    }
+    // 拼接所有已选 chip 的 value
+    input.value = [...selectedChips.values()].join('；');
+  }
+
+  // ------- JD 结构化提取 -------
+  function extractJDSections(text) {
+    if (!text) return { duties: [], hard: [], bonus: [], skills: [] };
+    const sections = { duties: [], hard: [], bonus: [], skills: [] };
+
+    // 先尝试按关键词定位分段
+    let remaining = text;
+    const markers = [];
+    JD_SECTION_RULES.forEach(rule => {
+      rule.patterns.forEach(pat => {
+        let m;
+        while ((m = pat.exec(text)) !== null) {
+          markers.push({ key: rule.key, pos: m.index, length: m[0].length });
+        }
+      });
+    });
+    markers.sort((a, b) => a.pos - b.pos);
+
+    // 如果有明确分段标记，切分；否则按句号/换行切分配到最接近的段
+    if (markers.length >= 2) {
+      for (let i = 0; i < markers.length; i++) {
+        const start = markers[i].pos + markers[i].length;
+        const end = (i + 1 < markers.length) ? markers[i+1].pos : text.length;
+        const chunk = text.substring(start, end).trim();
+        const lines = chunk.split(/[\n。；\;]/).map(s => s.trim()).filter(s => s.length > 4 && s.length < 200);
+        sections[markers[i].key].push(...lines);
+      }
+    } else {
+      // 降级：整段按句拆分，技能词多的归 skills
+      const lines = text.split(/[\n。；\;]/).map(s => s.trim()).filter(s => s.length > 4 && s.length < 200);
+      const skillKws = /(熟练|精通|熟悉|掌握|技能|工具|平台|语言)/;
+      lines.forEach(l => {
+        if (skillKws.test(l)) sections.skills.push(l);
+        else sections.duties.push(l);
+      });
+    }
+
+    // 去重
+    Object.keys(sections).forEach(k => sections[k] = [...new Set(sections[k])].slice(0, 20));
+    return sections;
+  }
+
+  // 从 JD 文本里抽取关键词 / 硬技能 / 软技能
+  function extractKeywords(jdText, sections) {
+    const all = [].concat(sections.duties, sections.hard, sections.bonus, sections.skills).join(' ');
+
+    // 硬技能匹配：扫描同义词库中所有词
+    const found = new Set();
+    Object.keys(SYNONYM_MAP).forEach(canonical => {
+      SYNONYM_MAP[canonical].forEach(alias => {
+        if (all.toLowerCase().includes(alias.toLowerCase())) {
+          found.add(canonical);
+        }
+      });
+    });
+
+    // 额外：正则抓一些常见硬技能词
+    const hardSkillPattern = /\b(Python|SQL|Java|C\+\+|Go|TypeScript|React|Vue|Node\.js|Spring|Kubernetes|Docker|AWS|MySQL|MongoDB|Redis|Linux|Git|Figma|Sketch|Notion|Jira|Axure|PMP|CET-4|CET-6|IELTS|TOEFL|MA|MBA|硕士|本科|实习|经验)\b/gi;
+    let m;
+    while ((m = hardSkillPattern.exec(all)) !== null) {
+      found.add(m[0]);
+    }
+
+    // 数字年限要求
+    const yearMatch = all.match(/(\d+)\s*(年|年以上|年以上经验|\+\s*年)/g) || [];
+    yearMatch.forEach(y => found.add(y));
+
+    return [...found];
+  }
+
+  // ------- 匹配分析 -------
+  function analyzeMatch(jdKeywords, resumeText) {
+    const covered = [], partial = [], missing = [];
+    const resumeLower = resumeText.toLowerCase();
+
+    jdKeywords.forEach(kw => {
+      // 查同义词库
+      const synonyms = SYNONYM_MAP[kw] || [kw];
+      let hit = null;
+      for (const s of synonyms) {
+        if (resumeLower.includes(s.toLowerCase())) { hit = s; break; }
+      }
+      if (hit) {
+        // 判断是完全匹配还是部分匹配（看简历里出现次数）
+        const count = (resumeLower.match(new RegExp(hit.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')) || []).length;
+        if (count >= 2 || /项目|负责|主导|设计|实现|优化|完成/.test(hit) || /\d+/.test(hit)) {
+          covered.push({ kw, hit: count >= 2 ? '充分体现' : hit + ' (' + count + '次)' });
+        } else {
+          partial.push({ kw, hit: hit + ' (仅 ' + count + ' 次)' });
+        }
+      } else {
+        missing.push(kw);
+      }
+    });
+
+    const score = jdKeywords.length === 0 ? 0
+      : Math.round((covered.length * 100 + partial.length * 50) / jdKeywords.length);
+
+    return { score, covered, partial, missing };
+  }
+
+  // ------- 改写建议（规则引擎，不用 LLM） -------
+  function generateRewriteSuggestions(match, jdPrompt, resumeText) {
+    const suggestions = [];
+
+    // 1. 缺口补全建议
+    match.missing.forEach(kw => {
+      const hasRelated = Object.keys(SYNONYM_MAP).find(c =>
+        SYNONYM_MAP[c].some(s => resumeText.toLowerCase().includes(s.toLowerCase()))
+      );
+      if (hasRelated) {
+        suggestions.push(`【补缺口】JD 要求 <strong>${kw}</strong>，简历中虽无该词但有相关经验（${hasRelated}），建议将相关经历改写融入 ${kw} 的语境中。`);
+      } else {
+        suggestions.push(`【新增】JD 要求 <strong>${kw}</strong>，简历中完全未提及。如果有相关经历建议新增条目；如果确实没有，建议在"自我评价"中快速学习能力来软弥补。`);
+      }
+    });
+
+    // 2. 部分匹配强化
+    match.partial.forEach(({ kw, hit }) => {
+      suggestions.push(`【强化】<strong>${kw}</strong> 在简历中仅出现 ${hit}，建议补充具体数据（如"使用XX提升了X%"）或增加相关经历描述。`);
+    });
+
+    // 3. 用户自定义方向
+    if (jdPrompt) {
+      if (/数据|量化|数字/.test(jdPrompt)) {
+        suggestions.push(`【量化】针对你的"${jdPrompt}"要求，建议所有工作/项目描述都补充 <strong>具体数字</strong>（百分比、次数、用户数、金额），数字比文字更有说服力。`);
+      }
+      if (/AI|AIGC|大模型|GenAI/i.test(jdPrompt)) {
+        suggestions.push(`【AI 侧重】你的 ${jdPrompt} 方向，建议把所有 AIGC / 模型微调 / Prompt 工程相关的经历提到简历前 1/3 处，并加粗 <strong>模型名称、微调效果、调用量、还原度</strong> 等硬指标。`);
+      }
+      if (/运营|增长|用户/.test(jdPrompt)) {
+        suggestions.push(`【运营侧重】针对"${jdPrompt}"，建议增加 <strong>用户行为数据</strong>（DAU/次日留存/转化率）和 <strong>运营策略</strong>（A/B 测试、私域、内容矩阵），体现增长思维。`);
+      }
+      if (/一页|精简/.test(jdPrompt)) {
+        suggestions.push(`【精简】建议把每条经历控制在 <strong>2-3 行</strong>，删除"协助参与""负责跟进"等弱动词，保留最硬核的 3 个项目 + 1 段实习。`);
+      }
+    }
+
+    // 4. 通用建议
+    suggestions.push(`【动词升级】把简历里的"做了/参与/负责"升级为 <strong>"策划/主导/搭建/推动/优化/落地"</strong>，动词决定简历气场。`);
+    suggestions.push(`【简历 SEO】把 JD 里高频出现的关键词（${(match.covered.concat(match.partial)).slice(0, 5).map(x => x.kw).join('、')}）尽量自然地嵌入简历的段落前 2 行，因为 HR/ATS 扫简历只看前 3 秒。`);
+
+    return suggestions;
+  }
+
+  // ------- 一键应用改写（模拟：对简历 DOM 做定向修改） -------
+  function applyRewrites() {
+    if (!confirm('这会根据匹配缺口自动改写简历中的部分段落。确认前建议先开启编辑模式手动核对。')) return;
+    // 简单实现：给所有 strong 标签后面追加一个 emoji 标记，
+    // 同时给所有经历条目里的关键词加粗（演示用途）
+    const descEls = document.querySelectorAll('.exp-desc li');
+    descEls.forEach(li => {
+      const text = li.innerText;
+      if (/\d/.test(text) && !li.querySelector('strong')) {
+        // 把第一个数字或成果加粗
+        const m = text.match(/([\d,]+[\+%％]?)/);
+        if (m) {
+          li.innerHTML = text.replace(m[1], '<strong>' + m[1] + '</strong>');
+        }
+      }
+    });
+    alert(' 已自动增强简历关键词加粗。你可以开启编辑后继续手动调整。');
+    autoFitOnePage();
+  }
+
+  async function copyReport() {
+    const lines = [];
+    const score = document.querySelector('.jd-score-row .num');
+    if (score) lines.push('【JD-简历匹配度】' + score.innerText + '分');
+    document.querySelectorAll('#jdMatch .jd-match-col').forEach(col => {
+      const title = col.querySelector('h5').innerText;
+      const items = [...col.querySelectorAll('li')].map(li => li.innerText).join('、');
+      lines.push(title + '：' + items);
+    });
+    const rewrites = [...document.querySelectorAll('#jdRewrite li')].map(li => li.innerText);
+    lines.push('---改写建议---');
+    lines.push(...rewrites);
+    try { await navigator.clipboard.writeText(lines.join('\n')); alert(' 分析报告已复制到剪贴板！'); }
+    catch { alert('复制失败，请手动选择文本'); }
+  }
+
+  // ------- 渲染结果 -------
+  function renderResult(sections, match, suggestions) {
+    const loading = document.getElementById('jdLoading');
+    const content = document.getElementById('jdResultContent');
+    loading.style.display = 'none'; content.style.display = 'block';
+
+    // 1. 分数
+    const ringClass = match.score >= 70 ? 'high' : match.score >= 40 ? 'mid' : 'low';
+    const scoreDesc = match.score >= 70 ? '匹配度较高，针对性优化后通过率不错！'
+      : match.score >= 40 ? '有一定差距，建议按改写建议定向补全。'
+      : '匹配度较低，强烈建议在简历中增加相关经验或用其他项目证明能力。';
+    document.getElementById('jdScoreRow').innerHTML = `
+      <div class="jd-score-ring ${ringClass}"><span class="num">${match.score}</span><span class="label">MATCH</span></div>
+      <div class="jd-score-info">
+        <h4>${match.score >= 70 ? ' 匹配度良好' : match.score >= 40 ? '️ 有一定差距' : ' 差距较大'}</h4>
+        <p>${scoreDesc} 覆盖 ${match.covered.length} 项 · 部分覆盖 ${match.partial.length} 项 · 缺口 ${match.missing.length} 项</p>
+      </div>`;
+
+    // 2. JD 结构化
+    const struct = document.getElementById('jdStruct');
+    struct.innerHTML = JD_SECTION_RULES.slice(0, 4).map(r => {
+      const items = sections[r.key] || [];
+      return `<div class="jd-struct-card">
+        <h5>${r.label} (${items.length})</h5>
+        ${items.length ? '<ul>' + items.slice(0, 6).map(i => '<li>' + i + '</li>').join('') + '</ul>' : '<ul><li style="color:#aaa">未识别到明确条目</li></ul>'}
+      </div>`;
+    }).join('');
+
+    // 3. 匹配三栏
+    document.getElementById('jdMatch').innerHTML = `
+      <div class="jd-match-col jd-col-covered">
+        <h5> 已覆盖 <span class="count">${match.covered.length}</span></h5>
+        <ul>${match.covered.map(x => '<li><strong>' + x.kw + '</strong> · ' + x.hit + '</li>').join('') || '<li style="color:#aaa">无</li>'}</ul>
+      </div>
+      <div class="jd-match-col jd-col-partial">
+        <h5> 部分覆盖 <span class="count">${match.partial.length}</span></h5>
+        <ul>${match.partial.map(x => '<li><strong>' + x.kw + '</strong> · ' + x.hit + '</li>').join('') || '<li style="color:#aaa">无</li>'}</ul>
+      </div>
+      <div class="jd-match-col jd-col-missing">
+        <h5> 缺口 <span class="count">${match.missing.length}</span></h5>
+        <ul>${match.missing.map(x => '<li>' + x + '</li>').join('') || '<li style="color:#aaa">无缺口 </li>'}</ul>
+      </div>`;
+
+    // 4. 改写建议
+    document.getElementById('jdRewrite').innerHTML =
+      '<ul class="jd-rewrite-list">' + suggestions.map(s => '<li>' + s + '</li>').join('') + '</ul>';
+  }
+
+  // ------- 主入口 -------
+  function runJDAnalyze() {
+    const jdText = document.getElementById('jdText').value.trim();
+    const resumeText = document.getElementById('resumeText').value.trim() || document.getElementById('resume').innerText;
+    const jdPrompt = document.getElementById('jdPrompt').value.trim();
+    const company = document.getElementById('jdCompany').value.trim();
+    const position = document.getElementById('jdPosition').value.trim();
+
+    if (!jdText) { alert('请先粘贴或上传 JD 岗位描述'); return; }
+    if (!resumeText) { alert('请先提取或上传简历内容'); return; }
+
+    // 保存公司/岗位到 localStorage，供 PDF 导出拼文件名
+    try {
+      localStorage.setItem(JD_INFO_KEY, JSON.stringify({ company, position }));
+    } catch(e) {}
+
+    const resultSection = document.getElementById('jdResult');
+    resultSection.classList.add('active');
+    document.getElementById('jdLoading').style.display = 'flex';
+    document.getElementById('jdResultContent').style.display = 'none';
+
+    setTimeout(() => {
+      // 1. JD 结构化
+      const sections = extractJDSections(jdText);
+      // 2. 关键词提取
+      const kws = extractKeywords(jdText, sections);
+      // 3. 匹配分析
+      const match = analyzeMatch(kws, resumeText);
+      // 4. 改写建议
+      const suggestions = generateRewriteSuggestions(match, jdPrompt, resumeText);
+      // 5. 渲染
+      renderResult(sections, match, suggestions);
+    }, 1200);
+  }
+
+  window.openJD = openJD;
+  window.closeJD = closeJD;
+  window.handleJDUpload = handleJDUpload;
+  window.handleResumeUpload = handleResumeUpload;
+  window.extractResume = extractResume;
+  window.runJDAnalyze = runJDAnalyze;
+  window.applyRewrites = applyRewrites;
+  window.copyReport = copyReport;
+
+  // ================================================================
+  //  上传简历 + AI 模型设置 + LLM 调用
+  // ================================================================
+
+  /* ---------- 上传简历 ---------- */
+  function openUploadModal() {
+    document.getElementById('uploadModal').classList.add('active');
+  }
+  // 文件选择后解析
+  document.getElementById('resumeUploadFile').addEventListener('change', async function() {
+    const f = this.files[0];
+    if (!f) return;
+    document.getElementById('uploadFileName').textContent = f.name;
+    document.getElementById('uploadLoading').style.display = 'flex';
+    try {
+      const text = await parseFile(f);
+      document.getElementById('uploadedResumeText').value = text;
+    } catch(e) {
+      alert('解析失败：' + e.message);
+    }
+    document.getElementById('uploadLoading').style.display = 'none';
+  });
+
+  // 智能分板块：把简历文本按关键词拆成各板块
+  function splitResumeSections(text) {
+    // 板块识别关键词
+    const markers = [
+      { key: 'header',     pat: /^.*?(?=教育背景|实习经历|项目经历|技能|工作经历|PROJECTS|EDUCATION|EXPERIENCE)/, label: '头部信息' },
+      { key: 'education',  pat: /教育背景|EDUCATION|教育/,   label: '教育背景' },
+      { key: 'internship', pat: /实习经历|INTERNSHIP|实习|工作经历|EXPERIENCE/, label: '实习/工作经历' },
+      { key: 'projects',   pat: /项目经历|PROJECTS|项目/,    label: '项目经历' },
+      { key: 'skills',     pat: /技能|SKILLS|证书|CERTIFICATE/, label: '技能与证书' },
+    ];
+    const sections = {};
+    // 用换行分行，按行扫描
+    const lines = text.split('\n');
+    let currentKey = 'header';
+    sections.header = [];
+    sections.education = [];
+    sections.internship = [];
+    sections.projects = [];
+    sections.skills = [];
+
+    // 头部：取前 10 行（一般是姓名+联系方式）
+    let headerEnd = 0;
+    for (let i = 0; i < Math.min(10, lines.length); i++) {
+      const l = lines[i].trim();
+      if (!l) continue;
+      if (/教育|实习|项目|技能|EDUCATION|INTERNSHIP|PROJECTS|SKILLS/.test(l)) break;
+      sections.header.push(l);
+      headerEnd = i + 1;
+    }
+
+    // 扫描剩余行
+    for (let i = headerEnd; i < lines.length; i++) {
+      const l = lines[i];
+      let matched = null;
+      for (const m of markers) {
+        if (m.key === 'header') continue;
+        if (new RegExp(m.pat).test(l.trim())) { matched = m.key; break; }
+      }
+      if (matched) currentKey = matched;
+      sections[currentKey].push(l);
+    }
+    // 去空行收尾
+    Object.keys(sections).forEach(k => {
+      sections[k] = sections[k].map(s => s.trim()).filter(s => s.length > 0).join('\n').trim();
+    });
+    return sections;
+  }
+
+  function fillUploadedResume() {
+    const text = document.getElementById('uploadedResumeText').value.trim();
+    if (!text) { alert('请先上传或粘贴简历内容'); return; }
+    const mode = document.querySelector('input[name="fillMode"]:checked').value;
+
+    if (mode === 'full') {
+      // 整体替换为单栏简历
+      const resume = document.getElementById('resume');
+      resume.innerHTML = `
+        <div class="resume-inner" style="padding:20px 25px;">
+          <div class="uploaded-full-text" contenteditable="false" style="white-space:pre-wrap;font-family:'Microsoft YaHei';font-size:10.5pt;line-height:1.8;color:#1C1C1C;">${text.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</div>
+        </div>`;
+    } else {
+      // 智能分板块
+      const sections = splitResumeSections(text);
+      const resume = document.getElementById('resume');
+      // 重建简历结构
+      let html = '<div class="resume-inner">';
+      // 头部
+      if (sections.header) {
+        html += '<div class="resume-header"><div class="header-text">';
+        sections.header.split('\n').forEach(l => {
+          html += `<div class="header-line" contenteditable="false">${l.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</div>`;
+        });
+        html += '</div></div>';
+      }
+      // 教育
+      if (sections.education) {
+        html += `<div class="section"><div class="section-title"><div class="section-title-cn" contenteditable="false">教育背景</div><div class="section-title-en" contenteditable="false">EDUCATION</div></div>
+          <div class="section-body" contenteditable="false" style="white-space:pre-wrap;font-size:9.2pt;line-height:1.7;">${sections.education.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</div></div>`;
+      }
+      // 实习
+      if (sections.internship) {
+        html += `<div class="section"><div class="section-title"><div class="section-title-cn" contenteditable="false">实习经历</div><div class="section-title-en" contenteditable="false">INTERNSHIP</div></div>
+          <div class="section-body" contenteditable="false" style="white-space:pre-wrap;font-size:9.2pt;line-height:1.7;">${sections.internship.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</div></div>`;
+      }
+      // 项目
+      if (sections.projects) {
+        html += `<div class="section"><div class="section-title"><div class="section-title-cn" contenteditable="false">项目经历</div><div class="section-title-en" contenteditable="false">PROJECTS</div></div>
+          <div class="section-body" contenteditable="false" style="white-space:pre-wrap;font-size:9.2pt;line-height:1.7;">${sections.projects.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</div></div>`;
+      }
+      // 技能
+      if (sections.skills) {
+        html += `<div class="section"><div class="section-title"><div class="section-title-cn" contenteditable="false">技能与证书</div><div class="section-title-en" contenteditable="false">SKILLS</div></div>
+          <div class="section-body" contenteditable="false" style="white-space:pre-wrap;font-size:9.2pt;line-height:1.7;">${sections.skills.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</div></div>`;
+      }
+      html += '</div>';
+      resume.innerHTML = html;
+    }
+
+    // 确保所有文本元素可编辑 + 模板切换缓存重置
+    originalSectionOrder = null;
+    ensureEditable();
+    // 上传后自动进入编辑模式，确保所有部分可直接编辑
+    if (!editMode) toggleEdit();
+    document.querySelectorAll('#resume [contenteditable]').forEach(el => el.setAttribute('contenteditable', 'true'));
+    refreshSectionDelButtons();
+    // 重置历史并保存
+    history = [];
+    pushHistory();
+    autoSave();
+    autoFitOnePage();
+    document.getElementById('uploadModal').classList.remove('active');
+    alert('简历已填入并进入编辑模式，所有内容均可直接修改！');
+  }
+  window.openUploadModal = openUploadModal;
+  window.fillUploadedResume = fillUploadedResume;
+
+  /* ---------- AI 模型设置 ---------- */
+  const AI_SETTINGS_KEY = 'resume_ai_settings';
+  const PROVIDER_CONFIG = {
+    deepseek: {
+      baseUrl: 'https://api.deepseek.com/v1',
+      models: [
+        { id: 'deepseek-chat', name: 'DeepSeek-V3（通用，性价比高）' },
+        { id: 'deepseek-reasoner', name: 'DeepSeek-R1（推理强）' },
+      ]
+    },
+    openai: {
+      baseUrl: 'https://api.openai.com/v1',
+      models: [
+        { id: 'gpt-4o', name: 'GPT-4o' },
+        { id: 'gpt-4o-mini', name: 'GPT-4o mini' },
+        { id: 'gpt-3.5-turbo', name: 'GPT-3.5 Turbo' },
+      ]
+    },
+    qwen: {
+      baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+      models: [
+        { id: 'qwen-plus', name: 'Qwen-Plus' },
+        { id: 'qwen-turbo', name: 'Qwen-Turbo' },
+        { id: 'qwen-max', name: 'Qwen-Max' },
+      ]
+    },
+    zhipu: {
+      baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
+      models: [
+        { id: 'glm-4', name: 'GLM-4' },
+        { id: 'glm-4-plus', name: 'GLM-4-Plus' },
+        { id: 'glm-4-flash', name: 'GLM-4-Flash（免费）' },
+      ]
+    },
+    moonshot: {
+      baseUrl: 'https://api.moonshot.cn/v1',
+      models: [
+        { id: 'moonshot-v1-8k', name: 'Kimi 8K' },
+        { id: 'moonshot-v1-32k', name: 'Kimi 32K' },
+        { id: 'moonshot-v1-128k', name: 'Kimi 128K' },
+      ]
+    },
+    custom: {
+      baseUrl: '',
+      models: []
+    }
+  };
+
+  function getAISettings() {
+    // API Key 已由服务端管理，前端不再读取配置
+    return null;
+  }
+
+  function openAISettings() {
+    // AI 服务由服务端统一配置，弹窗仅展示说明
+    document.getElementById('aiModal').classList.add('active');
+  }
+
+  function onProviderChange() {
+    // 保留空函数避免历史引用报错
+  }
+
+  function saveAISettings() {
+    // 配置已移至服务端，前端无需保存
+    document.getElementById('aiModal').classList.remove('active');
+  }
+  window.openAISettings = openAISettings;
+  window.onProviderChange = onProviderChange;
+  window.saveAISettings = saveAISettings;
+
+  /* ---------- 后端地址（部署时改为同源或实际域名） ---------- */
+  const BACKEND_BASE_URL = (location.protocol === 'file:') ? 'http://localhost:8000' : '';
+
+  /* ---------- LLM 调用（统一走后端 /api/ai/chat） ---------- */
+  async function callLLM(prompt, systemPrompt) {
+    // 后端持有 API Key，前端不再发送 Key
+    const url = BACKEND_BASE_URL + '/api/ai/chat';
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt, system_prompt: systemPrompt || null }),
+    });
+    // 读取剩余次数响应头
+    const remaining = res.headers.get('X-RateLimit-Remaining');
+    if (remaining !== null) updateRemainingCount(parseInt(remaining) || 0);
+    if (!res.ok) {
+      let msg = 'AI 服务开小差了，请稍后再试';
+      try {
+        const data = await res.json();
+        if (data && data.detail) msg = data.detail;
+      } catch (e) {}
+      const err = new Error(msg);
+      err.status = res.status;
+      throw err;
+    }
+    const data = await res.json();
+    return data.content;
+  }
+
+  /* ---------- Toast 通知（替代 alert） ---------- */
+  function showToast(msg, type) {
+    type = type || 'info';
+    let t = document.getElementById('__toast__');
+    if (!t) {
+      t = document.createElement('div');
+      t.id = '__toast__';
+      t.style.cssText = 'position:fixed;top:20px;left:50%;transform:translateX(-50%);z-index:99999;padding:12px 24px;border-radius:8px;color:#fff;font-size:14px;box-shadow:0 4px 20px rgba(0,0,0,0.2);opacity:0;transition:opacity .3s;max-width:80vw;text-align:center;';
+      document.body.appendChild(t);
+    }
+    const colors = { info:'#1f6feb', error:'#dc2626', warn:'#d97706', success:'#059669' };
+    t.style.background = colors[type] || colors.info;
+    t.textContent = msg;
+    t.style.opacity = '1';
+    clearTimeout(t._timer);
+    t._timer = setTimeout(() => { t.style.opacity = '0'; }, 3500);
+  }
+
+  /* ---------- 剩余 AI 次数展示 ---------- */
+  let aiRemaining = -1; // -1 表示未知
+  function updateRemainingCount(n) {
+    aiRemaining = n;
+    const el = document.getElementById('aiRemaining');
+    if (el) {
+      if (n <= 0) { el.textContent = '今日次数已用完，明日再来'; el.style.color = '#dc2626'; }
+      else { el.textContent = '今日剩余次数：' + n; el.style.color = '#059669'; }
+    }
+  }
+
+  /* ---------- 隐私同意弹窗 ---------- */
+  const CONSENT_KEY = 'resume_ai_consent';
+  function hasConsent() {
+    try { return localStorage.getItem(CONSENT_KEY) === '1'; } catch(e) { return false; }
+  }
+  function showConsentModal(onAgree) {
+    document.getElementById('consentModal').classList.add('active');
+    const cb = document.getElementById('consentCheckbox');
+    cb.checked = false;
+    const btn = document.getElementById('consentConfirmBtn');
+    btn.disabled = true;
+    btn.style.opacity = '0.5';
+    cb.onchange = () => {
+      btn.disabled = !cb.checked;
+      btn.style.opacity = cb.checked ? '1' : '0.5';
+    };
+    btn.onclick = () => {
+      if (!cb.checked) return;
+      try { localStorage.setItem(CONSENT_KEY, '1'); } catch(e) {}
+      document.getElementById('consentModal').classList.remove('active');
+      onAgree();
+    };
+    document.getElementById('consentCancelBtn').onclick = () => {
+      document.getElementById('consentModal').classList.remove('active');
+    };
+  }
+
+  /* ---------- 用 LLM 解析 JD 结构化 ---------- */
+  async function llmExtractJD(jdText) {
+    const prompt = `请从以下 JD 中提取结构化信息，严格按 JSON 格式输出，只输出 JSON，不要其他文字：
+{
+  "duties": ["岗位职责1", "岗位职责2", ...],
+  "hard": ["硬性要求1", ...],
+  "bonus": ["加分项1", ...],
+  "skills": ["技能关键词1", "技能关键词2", ...]
+}
+注意：skills 只提取技能名称（如 SQL、Python、Axure、产品运营等），不要句子。
+
+JD 内容：
+${jdText}`;
+    try {
+      const result = await callLLM(prompt, '你是专业的 JD 解析助手，只输出 JSON。');
+      if (!result) return null;
+      // 尝试提取 JSON
+      const jsonMatch = result.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        return JSON.parse(jsonMatch[0]);
+      }
+      return null;
+    } catch(e) {
+      console.warn('LLM JD 解析失败，降级到规则引擎：', e.message);
+      return null;
+    }
+  }
+
+  /* ---------- 用 LLM 做匹配分析 + 改写建议 ---------- */
+  async function llmMatchAndRewrite(jdText, resumeText, userPrompt, jdSections) {
+    const prompt = `请分析以下 JD 和简历的匹配度，并给出改写建议。
+
+【JD】
+${jdText}
+
+【JD 结构化提取】
+岗位职责：${(jdSections.duties || []).join('\n')}
+硬性要求：${(jdSections.hard || []).join('\n')}
+加分项：${(jdSections.bonus || []).join('\n')}
+
+【简历】
+${resumeText}
+
+【用户自定义润色方向】
+${userPrompt || '（无）'}
+
+请严格按以下 JSON 格式输出，只输出 JSON：
+{
+  "score": 匹配分数（0-100 的整数）,
+  "covered": ["JD 中已被简历覆盖的技能或要求"],
+  "partial": ["部分覆盖的技能或要求"],
+  "missing": ["JD 中简历未覆盖的技能或要求"],
+  "suggestions": [
+    "针对 JD 缺口的定向改写建议1",
+    "针对用户润色方向的改写建议2",
+    "量化、动词升级等通用建议3"
+  ],
+  "summary": "一句话总结匹配情况"
+}`;
+    try {
+      const result = await callLLM(prompt, '你是专业的简历优化顾问，擅长 JD-简历匹配分析和定向改写。只输出 JSON。');
+      if (!result) return null;
+      const jsonMatch = result.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        return JSON.parse(jsonMatch[0]);
+      }
+      return null;
+    } catch(e) {
+      console.warn('LLM 匹配分析失败：', e.message);
+      throw e; // 透传后端真实错误信息，由 runJDAnalyze 展示
+    }
+  }
+
+  /* ---------- runJDAnalyze：同意检查 + 后端 LLM + loading/重试 + toast ---------- */
+  let aiLoading = false;
+  window.runJDAnalyze = async function() {
+    if (aiLoading) return; // 防连点
+    const jdText = document.getElementById('jdText').value.trim();
+    const resumeText = document.getElementById('resumeText').value.trim() || document.getElementById('resume').innerText;
+    const jdPrompt = document.getElementById('jdPrompt').value.trim();
+    const company = document.getElementById('jdCompany').value.trim();
+    const position = document.getElementById('jdPosition').value.trim();
+
+    if (!jdText) { showToast('请先粘贴或上传 JD 岗位描述', 'warn'); return; }
+    if (!resumeText) { showToast('请先提取或上传简历内容', 'warn'); return; }
+
+    // 隐私同意检查
+    if (!hasConsent()) {
+      showConsentModal(() => { window.runJDAnalyze(); });
+      return;
+    }
+
+    try {
+      localStorage.setItem(JD_INFO_KEY, JSON.stringify({ company, position }));
+    } catch(e) {}
+
+    const resultSection = document.getElementById('jdResult');
+    resultSection.classList.add('active');
+    document.getElementById('jdLoading').style.display = 'flex';
+    document.getElementById('jdResultContent').style.display = 'none';
+
+    // 进入 loading 态：按钮禁用 + 文案
+    aiLoading = true;
+    const aiBtn = document.querySelector('.jd-footer .btn-ai');
+    const btnOldText = aiBtn.textContent;
+    aiBtn.disabled = true;
+    aiBtn.style.opacity = '0.6';
+    aiBtn.textContent = ' AI正在改写，约需10-20秒';
+    document.getElementById('jdLoading').innerHTML = '<span style="animation:jd-spin 1s linear infinite;display:inline-block;">⟳</span> 正在调用 AI 分析 JD 匹配度...';
+
+    const doAnalyze = async () => {
+      try {
+        // 1. LLM 解析 JD
+        let sections = await llmExtractJD(jdText);
+        if (!sections) sections = extractJDSections(jdText);
+        // 2. LLM 匹配分析
+        const llmResult = await llmMatchAndRewrite(jdText, resumeText, jdPrompt, sections);
+        if (llmResult) {
+          const match = {
+            score: llmResult.score || 0,
+            covered: (llmResult.covered || []).map(x => ({ kw: x, hit: 'LLM 判定已覆盖' })),
+            partial: (llmResult.partial || []).map(x => ({ kw: x, hit: 'LLM 判定部分覆盖' })),
+            missing: llmResult.missing || [],
+          };
+          renderResult(sections, match, llmResult.suggestions || []);
+          finishLoading();
+          return;
+        }
+        console.warn('LLM 返回无效，降级到规则引擎');
+        throw new Error('LLM 返回结果无效');
+      } catch(e) {
+        console.warn('LLM 流程出错：', e.message);
+        // 失败：展示友好错误 + 重试按钮（不自动降级，让用户决定）
+        showAIFailure(e.message || 'AI 服务开小差了，请稍后再试');
+        finishLoading();
+      }
+    };
+    setTimeout(doAnalyze, 300);
+  };
+
+  function finishLoading() {
+    aiLoading = false;
+    const aiBtn = document.querySelector('.jd-footer .btn-ai');
+    aiBtn.disabled = false;
+    aiBtn.style.opacity = '1';
+    aiBtn.textContent = ' 开始分析';
+    document.getElementById('jdLoading').style.display = 'none';
+  }
+
+  function showAIFailure(msg) {
+    const loading = document.getElementById('jdLoading');
+    loading.style.display = 'flex';
+    loading.style.flexDirection = 'column';
+    loading.style.gap = '12px';
+    loading.innerHTML = `
+      <div style="color:#dc2626;font-weight:bold;">${msg}</div>
+      <div style="display:flex;gap:8px;">
+        <button class="btn btn-ai" onclick="window.runJDAnalyze()"> 重试</button>
+        <button class="btn btn-reset" onclick="runRuleEngineFallback()"> 使用免费规则引擎</button>
+      </div>`;
+  }
+
+  // 规则引擎兜底（用户主动选择）
+  window.runRuleEngineFallback = function() {
+    const jdText = document.getElementById('jdText').value.trim();
+    const resumeText = document.getElementById('resumeText').value.trim() || document.getElementById('resume').innerText;
+    const jdPrompt = document.getElementById('jdPrompt').value.trim();
+    const sections = extractJDSections(jdText);
+    const kws = extractKeywords(jdText, sections);
+    const match = analyzeMatch(kws, resumeText);
+    const suggestions = generateRewriteSuggestions(match, jdPrompt, resumeText);
+    renderResult(sections, match, suggestions);
+    finishLoading();
+  };
+
+  // Esc 关闭所有弹窗
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') {
+      document.querySelectorAll('.jd-modal').forEach(m => m.classList.remove('active'));
+    }
+  });
+
+  // ========== 岗位内容模板 ==========
+  // 每套模板定义头部、教育、实习、项目、技能，供用户一键载入示例内容后自行修改
+  const JOB_TEMPLATES = {
+    operations: {
+      name: '张三', intent: '求职意向 · 产品运营实习生',
+      phone: '138****8888', email: 'zhangsan@example.com',
+      education: [
+        { school: 'XX大学', major: '新闻传播学', degree: '硕士在读', date: '2025.09 – 2028.06' },
+        { school: 'XX财经大学', major: '市场营销', degree: '本科', date: '2020.09 – 2024.06' },
+      ],
+      internship: [
+        { company: 'XX科技有限公司', role: '产品运营实习生', date: '2026.06 – 2026.08',
+          bullets: [
+            '<strong>用户增长运营：</strong>负责XX平台新用户冷启动，设计 <strong>3 套</strong> 拉新活动方案，通过渠道投放+社群裂变组合拳，单月新增注册用户 <strong>1.2 万+</strong>，新用户次留提升至 <strong>42%</strong>。',
+            '<strong>活动运营：</strong>主导平台「XX周年庆」大型运营活动，统筹资源位排期、奖品池设计与风险预案，活动期间 DAU 峰值达 <strong>8.5 万</strong>，GMV 环比增长 <strong>68%</strong>。',
+            '<strong>数据驱动优化：</strong>搭建核心指标看板（留存、转化、漏斗），通过 A/B 测试优化落地页文案与按钮样式，关键路径转化率从 <strong>3.1%</strong> 提升至 <strong>5.6%</strong>。',
+          ] },
+        { company: 'XX互联网公司', role: '内容运营实习生', date: '2025.07 – 2025.09',
+          bullets: [
+            '<strong>内容生态建设：</strong>策划并执行 UGC 内容征集活动，产出优质内容 <strong>300+</strong> 篇，精选专题曝光量 <strong>50 万+</strong>，带动内容池月活增长 <strong>25%</strong>。',
+            '<strong>达人合作：</strong>对接 <strong>20+</strong> 位腰部达人完成内容共创，单篇爆款最高阅读 <strong>10 万+</strong>，为品牌节省投放成本约 <strong>30%</strong>。',
+          ] },
+      ],
+      projects: [
+        { name: '校园二手交易小程序运营', tag: '项目负责人', date: '2025.03 – 2025.06',
+          bullets: [
+            '<strong>冷启动策略：</strong>0 预算启动校园二手交易平台，通过社群裂变+KOC 种草获取种子用户 <strong>2,000+</strong>，首月订单 <strong>500+</strong> 单。',
+            '<strong>运营机制设计：</strong>设计信用积分、举报审核、精选推荐机制，降低纠纷率至 <strong>2%</strong> 以下，复购率达 <strong>35%</strong>。',
+          ] },
+      ],
+      skills: [
+        { name: '数据分析', val: 'Excel（透视表/函数）、SQL、神策数据' },
+        { name: '运营工具', val: '飞书多维表格、Axure、XMind、135 编辑器' },
+        { name: '语言与证书', val: 'CET-6、普通话二级甲等' },
+      ],
+    },
+    marketing: {
+      name: '张三', intent: '求职意向 · 市场营销实习生',
+      phone: '138****8888', email: 'zhangsan@example.com',
+      education: [
+        { school: 'XX大学', major: '广告学', degree: '硕士在读', date: '2025.09 – 2028.06' },
+        { school: 'XX师范大学', major: '汉语言文学', degree: '本科', date: '2020.09 – 2024.06' },
+      ],
+      internship: [
+        { company: 'XX快消品牌', role: '市场营销实习生', date: '2026.06 – 2026.08',
+          bullets: [
+            '<strong>品牌推广：</strong>参与新品上市整合营销战役，统筹线上社媒投放+线下快闪活动，话题总曝光 <strong>2,000 万+</strong>，新品首月销量超目标 <strong>30%</strong>。',
+            '<strong>市场调研：</strong>组织 <strong>3 场</strong> 焦点小组访谈与 <strong>500 份</strong> 问卷调研，输出消费者洞察报告，为产品定位与定价策略提供数据支撑。',
+            '<strong>KOL 合作：</strong>筛选并对接 <strong>15+</strong> 位美妆/生活方式 KOL，完成内容 brief 与审核，合作内容总互动量 <strong>80 万+</strong>。',
+          ] },
+      ],
+      projects: [
+        { name: '国货品牌社媒传播方案', tag: '课程项目', date: '2025.10 – 2025.12',
+          bullets: [
+            '<strong>策略制定：</strong>针对 XX 国货品牌制定双 11 社媒传播方案，设计「情感共鸣+场景种草」内容矩阵，覆盖小红书/抖音/B 站三平台。',
+            '<strong>创意执行：</strong>产出 <strong>12 条</strong> 短视频脚本与 <strong>20 篇</strong> 图文笔记，预估总曝光 <strong>500 万+</strong>，获学院营销大赛一等奖。',
+          ] },
+      ],
+      skills: [
+        { name: '营销工具', val: 'Excel、PPT、剪映、Canva、新榜数据' },
+        { name: '专业能力', val: '品牌策划、市场调研、消费者洞察、内容营销' },
+        { name: '语言与证书', val: 'CET-6、Adobe 认证（PS/PR）' },
+      ],
+    },
+    sales: {
+      name: '张三', intent: '求职意向 · 销售管培生',
+      phone: '138****8888', email: 'zhangsan@example.com',
+      education: [
+        { school: 'XX大学', major: '国际经济与贸易', degree: '本科', date: '2020.09 – 2024.06' },
+      ],
+      internship: [
+        { company: 'XX科技有限公司', role: '销售实习生', date: '2026.06 – 2026.08',
+          bullets: [
+            '<strong>客户开发：</strong>通过电话陌拜+行业展会开发潜在客户 <strong>200+</strong> 家，成功转化 <strong>15 家</strong>，累计签单金额 <strong>80 万+</strong>，达成率 <strong>133%</strong>。',
+            '<strong>客户维护：</strong>负责 <strong>30+</strong> 家存量客户的日常跟进与需求挖掘，客户续约率 <strong>95%</strong>，交叉销售带来额外收入 <strong>20 万</strong>。',
+            '<strong>销售赋能：</strong>整理客户异议话术库与竞品对比表，协助团队缩短成单周期 <strong>20%</strong>，个人月度销冠 <strong>2 次</strong>。',
+          ] },
+        { company: 'XX保险公司', role: '渠道销售实习生', date: '2025.07 – 2025.09',
+          bullets: [
+            '<strong>渠道拓展：</strong>开拓银行与第三方理财渠道 <strong>5 家</strong>，月均出单 <strong>30 单</strong>，渠道贡献保费 <strong>50 万</strong>。',
+          ] },
+      ],
+      projects: [
+        { name: '校园数码产品代理销售', tag: '创业项目', date: '2023.09 – 2024.05',
+          bullets: [
+            '<strong>业绩成果：</strong>担任校园代理负责人，组建 <strong>8 人</strong> 销售团队，一学年累计销售额 <strong>120 万</strong>，净利润 <strong>15 万</strong>。',
+            '<strong>团队管理：</strong>建立分级佣金激励与师徒带教机制，团队人均月销 <strong>1.5 万</strong>，流失率低于 <strong>10%</strong>。',
+          ] },
+      ],
+      skills: [
+        { name: '销售技能', val: '客户开发、需求挖掘、谈判技巧、CRM 系统（销售易）' },
+        { name: '办公工具', val: 'Excel、PPT、企业微信、钉钉' },
+        { name: '语言与证书', val: 'CET-4、驾驶证 C1' },
+      ],
+    },
+    functional: {
+      name: '张三', intent: '求职意向 · 人力资源实习生',
+      phone: '138****8888', email: 'zhangsan@example.com',
+      education: [
+        { school: 'XX大学', major: '人力资源管理', degree: '本科', date: '2020.09 – 2024.06' },
+      ],
+      internship: [
+        { company: 'XX互联网公司', role: 'HR 实习生', date: '2026.06 – 2026.08',
+          bullets: [
+            '<strong>招聘执行：</strong>负责技术岗简历筛选与面试邀约，日均处理简历 <strong>80+</strong> 份，月均到面 <strong>40 人</strong>， Offer 接受率 <strong>75%</strong>。',
+            '<strong>员工关系：</strong>协助组织新员工入职培训 <strong>5 场</strong>，覆盖 <strong>60+</strong> 人，梳理入职流程节点 <strong>12 项</strong>，优化后入职办理时长缩短 <strong>40%</strong>。',
+            '<strong>数据分析：</strong>月度人力资源数据报表（编制、流失率、招聘漏斗），通过数据发现核心岗位流失率偏高并输出分析报告，推动调薪方案落地。',
+          ] },
+      ],
+      projects: [
+        { name: '校园招聘体系优化', tag: '课程项目', date: '2025.10 – 2025.12',
+          bullets: [
+            '<strong>流程梳理：</strong>诊断现有校招流程，识别 <strong>6 个</strong> 效率瓶颈，提出「统一笔试+结构化面试」优化方案，预计缩短校招周期 <strong>30%</strong>。',
+          ] },
+      ],
+      skills: [
+        { name: '专业能力', val: '招聘、员工关系、薪酬绩效基础、劳动法' },
+        { name: '办公工具', val: 'Excel（VLOOKUP/数据透视）、PPT、北森招聘系统' },
+        { name: '语言与证书', val: 'CET-6、企业人力资源管理师（四级）' },
+      ],
+    },
+    popular: {
+      name: '张三', intent: '求职意向 · 产品运营实习生',
+      phone: '138****8888', email: 'zhangsan@example.com',
+      education: [
+        { school: 'XX大学', major: '计算机科学与技术', degree: '本科', date: '2020.09 – 2024.06' },
+      ],
+      internship: [
+        { company: 'XX科技有限公司', role: '产品运营实习生', date: '2026.06 – 2026.08',
+          bullets: [
+            '<strong>产品运营：</strong>负责 XX 产品日常运营，通过数据监控与用户反馈分析，推动 <strong>5 项</strong> 功能迭代，用户满意度提升 <strong>15%</strong>。',
+            '<strong>活动策划：</strong>策划线上运营活动 <strong>3 场</strong>，累计参与人数 <strong>5 万+</strong>，活动期间 DAU 提升 <strong>20%</strong>。',
+            '<strong>数据分析：</strong>搭建运营数据周报体系，监控核心指标 <strong>10+</strong> 项，输出分析报告 <strong>8 篇</strong>，为业务决策提供数据支撑。',
+          ] },
+      ],
+      projects: [
+        { name: '校园互助平台', tag: '个人项目', date: '2025.09 – 2026.01',
+          bullets: [
+            '<strong>产品设计：</strong>独立完成需求调研、原型设计与产品文档，覆盖 <strong>1,000+</strong> 目标用户，上线后月活 <strong>500+</strong>。',
+          ] },
+      ],
+      skills: [
+        { name: '专业工具', val: 'Axure、XMind、Excel、SQL 基础' },
+        { name: '通用能力', val: '需求分析、数据分析、文档撰写、跨部门沟通' },
+        { name: '语言与证书', val: 'CET-4' },
+      ],
+    },
+  };
+
+  function renderEducation(edu) {
+    return edu.map(e => `
+      <div class="edu-item">
+        <div class="school">
+          <span contenteditable="false">${e.school}</span>
+          <span class="major">· ${e.major}</span>
+          <span class="degree">${e.degree}</span>
+        </div>
+        <div class="date" contenteditable="false">${e.date}</div>
+      </div>`).join('');
+  }
+  function renderExperience(exp, isProject) {
+    return exp.map(e => {
+      const tag = isProject
+        ? `<span class="project-tag">${e.tag}</span>`
+        : `<span class="role"> ｜ ${e.role}</span>`;
+      const lis = e.bullets.map(b => `<li>${b}</li>`).join('');
+      return `
+      <div class="exp-item">
+        <div class="exp-header">
+          <div>
+            <span class="company" contenteditable="false">${e.company}</span>
+            ${tag}
+          </div>
+          <div class="date" contenteditable="false">${e.date}</div>
+        </div>
+        <div class="exp-desc" contenteditable="false">
+          <ul>${lis}</ul>
+        </div>
+      </div>`;
+    }).join('');
+  }
+  function renderSkills(skills) {
+    return skills.map(s => `
+      <div class="skill-cat">
+        <div class="skill-name" contenteditable="false">${s.name}</div>
+        <div class="skill-val" contenteditable="false">${s.val}</div>
+      </div>`).join('');
+  }
+
+  function loadJobTemplate(key) {
+    if (!key) return;
+    const tpl = JOB_TEMPLATES[key];
+    if (!tpl) return;
+    if (!confirm('载入岗位模板将替换当前简历内容（建议先导出备份），是否继续？')) {
+      document.getElementById('jobTemplateSelect').value = '';
+      return;
+    }
+    const resumeInner = document.querySelector('#resume .resume-inner');
+    const header = resumeInner.querySelector('.resume-header');
+    // 更新头部
+    header.querySelector('.name').textContent = tpl.name;
+    header.querySelector('.intent-pill').textContent = tpl.intent;
+    const contactVals = header.querySelectorAll('.contact-bar .val');
+    if (contactVals[0]) contactVals[0].textContent = tpl.phone;
+    if (contactVals[1]) contactVals[1].textContent = tpl.email;
+
+    // 移除旧板块（保留头部）
+    resumeInner.querySelectorAll(':scope > .section').forEach(s => s.remove());
+
+    // 重建板块
+    const eduHtml = `
+      <div class="section">
+        <div class="section-title"><span class="section-bar"></span><span class="section-title-cn" contenteditable="false">教育背景</span><span class="section-title-en">EDUCATION</span></div>
+        <div class="section-divider"></div><div class="section-divider-light"></div>
+        ${renderEducation(tpl.education)}
+      </div>`;
+    const intHtml = `
+      <div class="section">
+        <div class="section-title"><span class="section-bar"></span><span class="section-title-cn" contenteditable="false">实习经历</span><span class="section-title-en">INTERNSHIP</span></div>
+        <div class="section-divider"></div><div class="section-divider-light"></div>
+        ${renderExperience(tpl.internship, false)}
+      </div>`;
+    const projHtml = `
+      <div class="section">
+        <div class="section-title"><span class="section-bar"></span><span class="section-title-cn" contenteditable="false">项目经历</span><span class="section-title-en">PROJECTS</span></div>
+        <div class="section-divider"></div><div class="section-divider-light"></div>
+        ${renderExperience(tpl.projects, true)}
+      </div>`;
+    const skillHtml = `
+      <div class="section">
+        <div class="section-title"><span class="section-bar"></span><span class="section-title-cn" contenteditable="false">技能与证书</span><span class="section-title-en">SKILLS</span></div>
+        <div class="section-divider"></div><div class="section-divider-light"></div>
+        <div class="skills-grid">${renderSkills(tpl.skills)}</div>
+      </div>`;
+
+    resumeInner.insertAdjacentHTML('beforeend', eduHtml + intHtml + projHtml + skillHtml);
+
+    // 重置模板缓存与编辑状态
+    originalSectionOrder = null;
+    if (editMode) {
+      ensureEditable();
+      document.querySelectorAll('#resume [contenteditable]').forEach(el => el.setAttribute('contenteditable', 'true'));
+      refreshSectionDelButtons();
+    }
+    // 保存简历快照（供撤销）
+    pushHistory();
+    setTimeout(autoFitOnePage, 100);
+  }
+  window.loadJobTemplate = loadJobTemplate;
+
+  // ========== 模板切换 ==========
+  // 保存原始板块顺序，切换时恢复
+  let originalSectionOrder = null;
+  function getSections() {
+    return document.querySelectorAll('#resume .resume-inner > .section');
+  }
+  function switchTemplate(name) {
+    const body = document.body;
+    // 移除所有 tmpl- 类
+    body.className = body.className.replace(/tmpl-\w+/g, '').trim();
+    body.classList.add('tmpl-' + name);
+
+    const resumeInner = document.querySelector('#resume .resume-inner');
+    if (!resumeInner) return;
+
+    // 第一次切换时保存原始顺序
+    if (!originalSectionOrder) {
+      originalSectionOrder = [...getSections()].map(s => {
+        const clone = s.cloneNode(true);
+        clone.querySelectorAll('.section-del').forEach(b => b.remove()); // 不缓存删除按钮
+        return clone;
+      });
+    }
+
+    // 先恢复原始顺序
+    const header = resumeInner.querySelector('.resume-header');
+    const sections = getSections();
+    sections.forEach(s => s.remove());
+
+    // 重新按原始顺序追加
+    if (originalSectionOrder) {
+      originalSectionOrder.forEach(s => {
+        const clone = s.cloneNode(true);
+        // 恢复 contenteditable 状态
+        if (editMode) {
+          clone.querySelectorAll('[contenteditable]').forEach(el => el.setAttribute('contenteditable', 'true'));
+        }
+        resumeInner.appendChild(clone);
+      });
+    }
+
+    // 按模板调整板块顺序
+    if (name === 'tech') {
+      // 技能前置：把 SKILLS 板块移到最前
+      const skillsSection = [...resumeInner.querySelectorAll('.section')].find(s =>
+        s.innerText.includes('SKILLS') || s.innerText.includes('技能与证书')
+      );
+      if (skillsSection && header) {
+        header.after(skillsSection);
+      }
+    } else if (name === 'academic') {
+      // 学术：教育背景前置
+      const eduSection = [...resumeInner.querySelectorAll('.section')].find(s =>
+        s.innerText.includes('EDUCATION') || s.innerText.includes('教育背景')
+      );
+      if (eduSection && header) {
+        header.after(eduSection);
+      }
+    }
+
+    // 编辑模式下：重新加删除按钮 + 恢复整块编辑
+    if (editMode) {
+      refreshSectionDelButtons();
+      if (blockEditMode) {
+        document.querySelectorAll('#resume .section, #resume .resume-header').forEach(blk => {
+          blk.setAttribute('contenteditable', 'true');
+          blk.querySelectorAll('[contenteditable]').forEach(el => el.setAttribute('contenteditable', 'false'));
+        });
+      }
+    }
+
+    // 保存模板选择
+    try { localStorage.setItem('resume_template', name); } catch(e) {}
+    setTimeout(autoFitOnePage, 100);
+  }
+  window.switchTemplate = switchTemplate;
+
+  // 页面加载时恢复上次选择的模板
+  (function() {
+    try {
+      const saved = localStorage.getItem('resume_template');
+      if (saved && saved !== 'standard') {
+        document.getElementById('templateSelect').value = saved;
+        setTimeout(() => switchTemplate(saved), 200);
+      }
+    } catch(e) {}
+  })();
+</script>
+</body>
+</html>

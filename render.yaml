@@ -1,0 +1,29 @@
+services:
+  - type: web
+    name: resume-editor
+    runtime: python
+    plan: free
+    region: oregon
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn server.main:app --host 0.0.0.0 --port $PORT
+    # 环境变量：含密钥的项用 sync: false，部署时在 Render 控制台手动填入
+    envVars:
+      - key: AI_PROVIDER
+        value: zhipu
+      - key: AI_MODEL
+        value: glm-4-flash
+      - key: AI_BASE_URL
+        value: https://open.bigmodel.cn/api/paas/v4
+      - key: AI_VISION_MODEL
+        value: glm-4v
+      - key: CONTACT_EMAIL
+        value: XGTX20020526@163.com
+      - key: PRIVACY_EFFECTIVE_DATE
+        value: "2026-11-12"
+      # 以下为密钥，部署时在控制台填入，不写入仓库
+      - key: AI_API_KEY
+        sync: false
+      - key: FEISHU_APP_ID
+        sync: false
+      - key: FEISHU_APP_SECRET
+        sync: false
