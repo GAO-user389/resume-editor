@@ -665,6 +665,27 @@ def my_feedbacks(req: IdentifyRequest, request: Request):
         raise HTTPException(status_code=500, detail="查询失败")
 
 
+@app.post("/api/feedback/replied", tags=["feedback"])
+def my_replied_feedbacks(req: IdentifyRequest):
+    """轻量端点：只返回当前用户已有管理员回复的工单（用于前端轮询角标）。"""
+    try:
+        items = db.list_my_feedbacks(req.fingerprint)
+        replied = [
+            {
+                "id": t["id"],
+                "content": t["content"][:100],
+                "admin_reply": t.get("admin_reply", "")[:200],
+                "replied_at": t.get("replied_at", ""),
+            }
+            for t in items
+            if t.get("status") == "replied" and t.get("admin_reply")
+        ]
+        return JSONResponse(content={"items": replied})
+    except Exception as e:
+        logger.error("查询已回复工单失败: %s", e)
+        raise HTTPException(status_code=500, detail="查询失败")
+
+
 def _lazy_analyze_pending(items: list):
     """同步触发 AI 分析（给还没分析的 pending 工单跑一下，最多 1 个）。"""
     for t in items:

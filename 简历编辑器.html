@@ -2374,6 +2374,8 @@
         userState = await res.json();
         updateQuotaDisplay();
         checkMyTickets();  // 检查是否有管理员回复（显示角标）
+        // 每 30 秒静默轮询一次（检查新回复）
+        setInterval(checkMyTickets, 30000);
       }
     } catch (e) {
       console.warn('设备识别失败，降级为本地模式');
@@ -2689,7 +2691,7 @@
   // 页面加载时检查是否有管理员回复（显示角标）
   async function checkMyTickets() {
     try {
-      const resp = await fetch('/api/feedback/mine', {
+      const resp = await fetch('/api/feedback/replied', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ fingerprint: window.DEVICE_FP }),
@@ -2697,25 +2699,52 @@
       if (!resp.ok) return;
       const data = await resp.json();
       const items = data.items || [];
-      const hasReplied = items.some(t => t.status === 'replied');
       const badge = document.getElementById('feedbackBadge');
-      if (badge) {
-        badge.style.display = hasReplied ? 'inline-block' : 'none';
-        // 也存一下已读状态（避免每次刷新都显示）
-        const lastRepliedAt = localStorage.getItem('last_seen_reply_at') || '';
-        const latestReplied = items.filter(t => t.status === 'replied').sort((a,b) => (b.replied_at||'').localeCompare(a.replied_at||''))[0];
-        if (latestReplied && lastRepliedAt < (latestReplied.replied_at || '')) {
-          badge.style.background = '#f59e0b';  // 橙色 = 有新回复
-          badge.textContent = '📬 新回复';
-        }
+      if (!badge) return;
+
+      if (items.length === 0) {
+        badge.style.display = 'none';
+        return;
+      }
+
+      // 已读 fid 列表
+      let seen = [];
+      try { seen = JSON.parse(localStorage.getItem('seen_reply_fids') || '[]'); } catch(e) {}
+
+      // 计算未读数
+      const newItems = items.filter(t => !seen.includes(t.id));
+      const unreadCount = newItems.length;
+
+      if (unreadCount > 0) {
+        badge.style.display = 'inline-block';
+        badge.style.background = '#ef4444';  // 红色 = 有新回复
+        badge.textContent = `📬 ${unreadCount} 条新回复`;
+        badge.title = '点击查看回复';
+      } else {
+        badge.style.display = 'inline-block';
+        badge.style.background = '#10b981';  // 绿色 = 都看过了但有回复
+        badge.textContent = `📬 ${items.length} 条回复`;
+        badge.title = '点击查看历史回复';
       }
     } catch (e) { /* 静默 */ }
   }
 
   function markTicketsRead() {
-    localStorage.setItem('last_seen_reply_at', new Date().toISOString());
-    const badge = document.getElementById('feedbackBadge');
-    if (badge) badge.style.display = 'none';
+    // 把当前所有已回复工单 fid 都标记为已读
+    fetch('/api/feedback/replied', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fingerprint: window.DEVICE_FP }),
+    }).then(r => r.json()).then(data => {
+      const items = data.items || [];
+      const seen = items.map(t => t.id);
+      localStorage.setItem('seen_reply_fids', JSON.stringify(seen));
+      const badge = document.getElementById('feedbackBadge');
+      if (badge) {
+        badge.style.background = '#10b981';
+        badge.textContent = `📬 ${items.length} 条回复`;
+      }
+    }).catch(()=>{});
   }
 
   function escapeHtml(s) {
