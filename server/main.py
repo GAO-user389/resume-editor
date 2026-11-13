@@ -769,25 +769,36 @@ def admin_reply(feedback_id: str, req: AdminReplyRequest,
     if not ok:
         raise HTTPException(status_code=404, detail="工单不存在")
 
-    # 尝试发邮件通知用户
+    # 尝试发邮件通知用户（后台线程，不阻塞回复接口）
     contact = raw.get("contact") or ""
-    email_ok = False
     if contact and "@" in contact:
-        try:
-            from server.email_client import notify_feedback_reply
-            email_ok = notify_feedback_reply(
-                to_email=contact,
-                user_content=raw.get("content", ""),
-                admin_reply=req.reply.strip(),
-                ai_analysis=raw.get("ai_analysis") or "",
-            )
-            logger.info("邮件发送 fid=%s to=%s ok=%s", feedback_id, contact, email_ok)
-        except Exception as e:
-            logger.warning("邮件发送异常 fid=%s: %s", feedback_id, e)
+        import threading
+        threading.Thread(
+            target=_send_reply_email,
+            args=(contact, raw.get("content", ""), req.reply.strip(), raw.get("ai_analysis") or ""),
+            daemon=True,
+        ).start()
+        email_started = True
     else:
         logger.info("用户未留有效邮箱，跳过邮件通知 fid=%s", feedback_id)
+        email_started = False
 
-    return JSONResponse(content={"ok": True, "email_sent": email_ok})
+    return JSONResponse(content={"ok": True, "email_sent": email_started})
+
+
+def _send_reply_email(to_email: str, user_content: str, admin_reply: str, ai_analysis: str):
+    """后台线程：发邮件通知用户。任何异常都吞掉，不影响主流程。"""
+    try:
+        from server.email_client import notify_feedback_reply
+        ok = notify_feedback_reply(
+            to_email=to_email,
+            user_content=user_content,
+            admin_reply=admin_reply,
+            ai_analysis=ai_analysis,
+        )
+        logger.info("邮件发送结果 to=%s ok=%s", to_email, ok)
+    except Exception as e:
+        logger.warning("后台邮件发送失败 to=%s: %s", to_email, e)
 
 
 @app.delete("/api/admin/feedbacks/{feedback_id}", tags=["admin"])
