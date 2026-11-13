@@ -189,7 +189,7 @@ def create_feedback(fingerprint: str, content: str, contact: str = "", image_bas
 
 
 def _row_to_feedback(r: tuple, include_image: bool = True) -> dict:
-    """把 db row 转成 dict（SELECT 顺序: id, content, contact, status, admin_reply, image_base64, ai_analysis, created_at, replied_at）。"""
+    """把 db row 转成 dict（SELECT 顺序: id, content, contact, status, admin_reply, image_base64, ai_analysis, ai_fix_plan, created_at, replied_at）。"""
     d = {
         "id": str(r[0]),
         "content": r[1],
@@ -199,9 +199,10 @@ def _row_to_feedback(r: tuple, include_image: bool = True) -> dict:
         "image_base64": (r[5] or "") if include_image else "",
         "has_image": bool(r[5]),
         "ai_analysis": r[6] or "",
-        "ai_analyzed_at": r[7].isoformat() if r[7] else "",
-        "created_at": r[8].isoformat() if r[8] else "",
-        "replied_at": r[9].isoformat() if r[9] else "",
+        "ai_fix_plan": r[7] or "",
+        "ai_analyzed_at": r[8].isoformat() if r[8] else "",
+        "created_at": r[9].isoformat() if r[9] else "",
+        "replied_at": r[10].isoformat() if r[10] else "",
     }
     return d
 
@@ -212,11 +213,17 @@ def list_my_feedbacks(fingerprint: str) -> list:
         cur = conn.cursor()
         cur.execute(
             "SELECT id, content, contact, status, admin_reply, image_base64, "
-            "ai_analysis, ai_analyzed_at, created_at, replied_at "
+            "ai_analysis, ai_fix_plan, ai_analyzed_at, created_at, replied_at "
             "FROM feedbacks WHERE fingerprint = %s ORDER BY created_at DESC",
             (fingerprint,),
         )
-        return [_row_to_feedback(r) for r in cur.fetchall()]
+        # 用户端不返回 ai_fix_plan（这是管理员看的内部信息）
+        results = []
+        for r in cur.fetchall():
+            d = _row_to_feedback(r)
+            d.pop("ai_fix_plan", None)
+            results.append(d)
+        return results
 
 
 def list_all_feedbacks(status: str = None, limit: int = 100) -> list:
@@ -225,7 +232,7 @@ def list_all_feedbacks(status: str = None, limit: int = 100) -> list:
         cur = conn.cursor()
         sql = (
             "SELECT id, fingerprint, content, contact, status, admin_reply, image_base64, "
-            "ai_analysis, ai_analyzed_at, created_at, replied_at "
+            "ai_analysis, ai_fix_plan, ai_analyzed_at, created_at, replied_at "
             "FROM feedbacks"
         )
         if status:
@@ -235,19 +242,23 @@ def list_all_feedbacks(status: str = None, limit: int = 100) -> list:
             cur.execute(sql + " ORDER BY created_at DESC LIMIT %s", (limit,))
         results = []
         for r in cur.fetchall():
-            d = _row_to_feedback(r, include_image=True)
-            d["fingerprint"] = (r[1] or "")[:12] + "..."  # 脱敏指纹
+            # r 比 _row_to_feedback 多了 fingerprint（第2列）
+            # 把它挪成 d["fingerprint"]，然后切片给 _row_to_feedback
+            fp = (r[1] or "")[:12] + "..."
+            d = _row_to_feedback(r[:1] + r[2:])  # 去掉 fingerprint 列
+            d["fingerprint"] = fp
             results.append(d)
         return results
 
 
-def save_ai_analysis(feedback_id: str, analysis: str) -> bool:
-    """保存 AI 自动分析结果。"""
+def save_ai_results(feedback_id: str, analysis: str, fix_plan: str) -> bool:
+    """保存 AI 分析 + 修复方案。"""
     with get_conn() as conn:
         cur = conn.cursor()
         cur.execute(
-            "UPDATE feedbacks SET ai_analysis = %s, ai_analyzed_at = NOW() WHERE id = %s RETURNING id",
-            (analysis, feedback_id),
+            "UPDATE feedbacks SET ai_analysis = %s, ai_fix_plan = %s, ai_analyzed_at = NOW() "
+            "WHERE id = %s RETURNING id",
+            (analysis, fix_plan, feedback_id),
         )
         return cur.fetchone() is not None
 

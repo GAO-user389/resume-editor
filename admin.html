@@ -202,6 +202,7 @@ function render() {
     let badge = '';
     if (t.has_image) badge += '📷';
     if (t.ai_analysis) badge += ' 🤖';
+    if (t.ai_fix_plan) badge += ' 🔧';
     let card = `
     <div class="ticket">
       <div class="ticket-head">
@@ -222,6 +223,12 @@ function render() {
       </div>`;
     } else {
       card += `<div style="font-size:11px;color:#9ca3af;margin:4px 0;">🤖 AI 分析中...</div>`;
+    }
+    if (t.ai_fix_plan) {
+      card += `<div style="background:#fffbeb;border-left:3px solid #f59e0b;padding:10px 14px;margin:8px 0;border-radius:0 6px 6px 0;font-size:13px;color:#78350f;white-space:pre-wrap;">
+        <div style="font-size:12px;color:#b45309;font-weight:700;margin-bottom:6px;">🔧 AI 修复方案（仅供参考，审核后再动手）</div>
+        ${escapeHtml(t.ai_fix_plan)}
+      </div>`;
     }
     if (t.contact) card += `<div class="ticket-contact">📞 联系方式：<span>${escapeHtml(t.contact)}</span></div>`;
     if (t.admin_reply) card += `<div class="ticket-reply">💬 我的回复：\n${escapeHtml(t.admin_reply)}</div>`;

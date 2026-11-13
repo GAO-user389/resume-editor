@@ -452,98 +452,155 @@ def activate_code(req: ActivateRequest, request: Request):
 # ========== AI 客服：反馈工单 ==========
 
 async def _run_ai_feedback_analysis(feedback_id: str, content: str, image_base64: str):
-    """后台任务：AI 自动分析反馈（可能看图 + 看文字，给出初步判断）。"""
+    """
+    后台任务：AI 自动分析反馈（可能看图 + 看文字）。
+    产出两个结果：
+      1. ai_analysis — 给用户/管理员看的诊断（分类、严重度、可能原因、建议）
+      2. ai_fix_plan — 给管理员看的修复方案（改哪个文件 + 改什么）
+    """
     import asyncio
     try:
-        # 先抽掉 data:image/xxx;base64, 前缀
+        # 抽掉 data:image/xxx;base64, 前缀
         img_clean = ""
+        ocr_text = ""
         if image_base64:
             prefix = image_base64.find(",")
             img_clean = image_base64[prefix+1:] if prefix >= 0 else image_base64
-
-        # 看图 + 文字，综合分析
-        if img_clean:
-            # 先用视觉模型识别截图中的文字
             try:
                 ocr_text = call_vision_ocr(img_clean)
             except Exception:
                 ocr_text = "（截图识别失败）"
-            analysis_prompt = f"""请分析以下用户反馈，判断问题类型、严重程度，并给出可能原因和解决建议。
 
-用户反馈文字：
-{content}
-
-截图识别到的内容：
-{ocr_text}
-
-请按以下 JSON 格式输出，只输出 JSON：
-{{
-  "category": "问题分类（功能Bug/UI问题/性能/使用困惑/其他）",
-  "severity": "严重程度（high/medium/low）",
-  "possible_cause": "可能原因分析，50字以内",
-  "suggestion": "给用户的解决建议，100字以内",
-  "need_human": "是否需要管理员介入（true/false）"
-}}"""
-        else:
-            analysis_prompt = f"""请分析以下用户反馈，判断问题类型、严重程度，并给出可能原因和解决建议。
+        # ===== 第一步：AI 诊断 =====
+        context_text = content + (f"\n\n[截图识别内容]\n{ocr_text}" if ocr_text else "")
+        analysis_prompt = f"""请分析以下用户反馈，判断问题类型、严重程度，并给出可能原因和解决建议。
 
 用户反馈：
-{content}
+{context_text}
 
-请按以下 JSON 格式输出，只输出 JSON：
+请严格按以下 JSON 格式输出，只输出 JSON：
 {{
-  "category": "问题分类（功能Bug/UI问题/性能/使用困惑/其他）",
+  "category": "问题分类（功能Bug/UI问题/性能/使用困惑/功能请求/其他）",
   "severity": "严重程度（high/medium/low）",
   "possible_cause": "可能原因分析，50字以内",
   "suggestion": "给用户的解决建议，100字以内",
   "need_human": "是否需要管理员介入（true/false）"
 }}"""
 
-        # 调 AI
         analysis_raw = call_llm(analysis_prompt)
-
-        # 解析 JSON 并格式化成可读文本
         analysis_text = _format_ai_analysis(analysis_raw)
+        analysis_json = _safe_parse_json(analysis_raw)
+        category = analysis_json.get("category", "") if analysis_json else ""
 
-        # 存数据库
-        db.save_ai_analysis(feedback_id, analysis_text)
-        logger.info("AI 反馈分析完成 fid=%s", feedback_id)
+        # ===== 第二步：AI 生成修复方案（仅 bug/UI/性能问题才做）=====
+        fix_plan_text = ""
+        if category in ("功能Bug", "UI问题", "性能"):
+            fix_plan_text = _generate_fix_plan(context_text, analysis_json or {})
+
+        # 存数据库（用新的 save_ai_results）
+        db.save_ai_results(feedback_id, analysis_text, fix_plan_text)
+        logger.info("AI 反馈分析完成 fid=%s category=%s has_fix=%s", feedback_id, category, bool(fix_plan_text))
     except Exception as e:
-        logger.warning("AI 反馈分析失败 fid=%s: %s", feedback_id, e)
+        import traceback
+        logger.warning("AI 反馈分析失败 fid=%s: %s\n%s", feedback_id, e, traceback.format_exc())
 
 
-def _format_ai_analysis(raw: str) -> str:
-    """把 AI 返回的 JSON 格式化成可读文本（容错 markdown 包裹 + JSON 解析失败降级）。"""
+def _generate_fix_plan(context_text: str, analysis: dict) -> str:
+    """给管理员看的修复方案——基于项目知识地图，告诉 AI 改哪个文件、改什么。"""
+    project_map = """【项目知识地图】这是一个简历编辑器 Web 应用，Render 部署（FastAPI 后端 + 静态前端）：
+
+前端（单文件）：
+  - 简历编辑器.html          主页面，HTML+CSS+JS 全在里面，contenteditable 编辑简历
+    关键函数区域：
+    * generateFingerprint()   Canvas+WebGL 生成设备指纹
+    * callLLM()               调 AI 改写（走后端 /api/ai/chat）
+    * runJDAnalyze()          JD 匹配分析
+    * exportPDF()              导出 PDF
+    * openUploadModal()       上传简历（.docx/.pdf）
+    * showPremiumModal()      买断弹窗
+    * identifyDevice()        页面加载时识别设备 + 查配额
+    * clearAllData()           清 localStorage
+
+后端（Python FastAPI，server/ 目录下）：
+  - server/main.py            所有 API 路由
+    * POST /api/auth/identify  设备识别，返回配额
+    * POST /api/auth/activate  激活码核销
+    * POST /api/ai/chat        AI 改写（配额检查 + 限流）
+    * POST /api/ai/ocr         JD 截图 OCR
+    * POST /api/feedback/*     反馈工单
+    * GET  /api/admin/*        管理员接口
+  - server/db.py              Supabase PostgreSQL 连接 + 表操作
+    * users 表                 fingerprint, free_calls_used, is_premium
+    * activation_codes 表      code, is_used, used_by
+    * feedbacks 表             工单
+  - server/ai_client.py        智谱 GLM 调用（call_llm, call_vision_ocr）
+  - server/feishu_client.py   飞书多维表格读取
+  - server/rate_limit.py      Redis 多层限流
+  - server/config.py           环境变量（AI_API_KEY, FREE_CALLS_LIMIT=5 等）"""
+
+    prompt = f"""基于下面的项目知识地图和用户反馈/AI 诊断，
+请给出一个**可执行的修复方案**给开发者（管理员）看。
+
+输出格式（严格按这个，不用 JSON）：
+1️⃣ 【改哪个文件】文件名 + 函数名
+2️⃣ 【改什么】问题根因 + 修改思路（1-3 句话）
+3️⃣ 【代码改动示意】给出关键代码片段（5-20 行），标注删除/新增
+4️⃣ 【验证方法】改完后怎么确认修好了
+5️⃣ 【风险评估】会不会影响其他功能（如果有，标出来）
+
+用户反馈：
+{context_text[:800]}
+
+AI 诊断：
+  分类：{analysis.get('category','-')}
+  严重度：{analysis.get('severity','-')}
+  可能原因：{analysis.get('possible_cause','-')}
+
+项目知识地图：
+{project_map}
+
+如果问题太模糊或信息不够，输出："⚠️ 信息不足，需要更多上下文才能给出修复方案"。"""
+
+    try:
+        return call_llm(prompt)[:800]
+    except Exception as e:
+        return f"⚠️ AI 生成修复方案失败：{e}"
+
+
+def _safe_parse_json(raw: str) -> dict | None:
+    """容错 JSON 解析，失败返回 None。"""
     import re, json
     text = raw.strip()
-    # 去 markdown code fence
     text = re.sub(r"^```(?:json)?\s*", "", text)
     text = re.sub(r"\s*```$", "", text)
-    # 截取 JSON 区间
     start = text.find("{")
     end = text.rfind("}")
     if start >= 0 and end > start:
         text = text[start:end+1]
     try:
-        obj = json.loads(text)
-        cat = obj.get("category", "未分类")
-        sev = obj.get("severity", "unknown")
-        sev_map = {"high": "🔴 高", "medium": "🟡 中", "low": "🟢 低", "unknown": "⚪ 未知"}
-        cause = obj.get("possible_cause", "")
-        suggestion = obj.get("suggestion", "")
-        need = obj.get("need_human", False)
-        lines = [
-            f"【分类】{cat}  严重度 {sev_map.get(sev, sev)}",
-        ]
-        if cause:
-            lines.append(f"【可能原因】{cause}")
-        if suggestion:
-            lines.append(f"【AI 建议】{suggestion}")
-        lines.append(f"【需人工介入】{'是' if need else '否'}")
-        return "\n".join(lines)
+        return json.loads(text)
     except Exception:
-        # JSON 解析失败，直接返回原文
+        return None
+
+
+def _format_ai_analysis(raw: str) -> str:
+    """把 AI 返回的 JSON 格式化成可读文本（容错 markdown 包裹 + JSON 解析失败降级）。"""
+    obj = _safe_parse_json(raw)
+    if not obj:
         return raw[:500]
+    cat = obj.get("category", "未分类")
+    sev = obj.get("severity", "unknown")
+    sev_map = {"high": "🔴 高", "medium": "🟡 中", "low": "🟢 低", "unknown": "⚪ 未知"}
+    cause = obj.get("possible_cause", "")
+    suggestion = obj.get("suggestion", "")
+    need = obj.get("need_human", False)
+    lines = [f"【分类】{cat}  严重度 {sev_map.get(sev, sev)}"]
+    if cause:
+        lines.append(f"【可能原因】{cause}")
+    if suggestion:
+        lines.append(f"【AI 建议】{suggestion}")
+    lines.append(f"【需人工介入】{'是' if need else '否'}")
+    return "\n".join(lines)
 
 
 @app.post("/api/feedback/submit", tags=["feedback"])
