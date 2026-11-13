@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>客服管理后台</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; background: #f5f7fa; color: #1f2937; }
+
+/* ===== 登录页 ===== */
+.login-wrap { min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+.login-card { background: #fff; padding: 40px; border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,.08); width: 340px; }
+.login-card h2 { text-align: center; margin-bottom: 24px; color: #374151; }
+.login-card input { width: 100%; padding: 12px 14px; border: 1px solid #d1d5db; border-radius: 8px; font-size: 15px; margin-bottom: 16px; }
+.login-card button { width: 100%; padding: 12px; background: #667eea; color: #fff; border: none; border-radius: 8px; font-size: 15px; cursor: pointer; }
+.login-card button:hover { background: #5a67d8; }
+.login-err { color: #dc2626; font-size: 13px; text-align: center; margin-bottom: 12px; min-height: 18px; }
+
+/* ===== 主界面 ===== */
+.app { display: none; padding: 24px; max-width: 1000px; margin: 0 auto; }
+.app.active { display: block; }
+.topbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+.topbar h1 { font-size: 20px; color: #111827; }
+.topbar .logout { background: transparent; border: 1px solid #d1d5db; padding: 6px 14px; border-radius: 6px; cursor: pointer; font-size: 13px; }
+
+.filters { display: flex; gap: 8px; margin-bottom: 16px; }
+.filters button { padding: 6px 14px; border: 1px solid #d1d5db; background: #fff; border-radius: 20px; cursor: pointer; font-size: 13px; }
+.filters button.active { background: #667eea; color: #fff; border-color: #667eea; }
+
+/* ===== 工单卡片 ===== */
+.ticket { background: #fff; border-radius: 10px; padding: 16px 20px; margin-bottom: 12px; box-shadow: 0 1px 3px rgba(0,0,0,.04); }
+.ticket-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+.ticket-status { font-size: 12px; padding: 2px 10px; border-radius: 10px; }
+.ticket-status.pending { background: #fef3c7; color: #92400e; }
+.ticket-status.replied { background: #d1fae5; color: #065f46; }
+.ticket-meta { font-size: 12px; color: #6b7280; }
+.ticket-content { font-size: 14px; line-height: 1.7; color: #374151; white-space: pre-wrap; word-break: break-word; margin: 8px 0; }
+.ticket-reply { background: #f0fdf4; border-left: 3px solid #10b981; padding: 10px 14px; margin-top: 10px; border-radius: 0 6px 6px 0; font-size: 13px; color: #065f46; white-space: pre-wrap; }
+.ticket-contact { font-size: 12px; color: #6b7280; margin-top: 4px; }
+.ticket-contact span { color: #374151; }
+
+/* 回复区（展开） */
+.ticket-detail { margin-top: 12px; padding-top: 12px; border-top: 1px dashed #e5e7eb; display: none; }
+.ticket-detail.open { display: block; }
+.ticket-detail textarea { width: 100%; min-height: 80px; padding: 10px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px; resize: vertical; }
+.ticket-detail .row { display: flex; gap: 8px; margin-top: 8px; justify-content: flex-end; }
+.ticket-detail button { padding: 6px 16px; border-radius: 6px; border: none; cursor: pointer; font-size: 13px; }
+.btn-reply { background: #667eea; color: #fff; }
+.btn-del { background: #fee2e2; color: #dc2626; }
+.btn-cancel { background: #f3f4f6; color: #374151; }
+
+.ticket-toggle { font-size: 12px; color: #667eea; cursor: pointer; user-select: none; }
+
+.empty { text-align: center; padding: 60px; color: #9ca3af; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<!-- 登录 -->
+<div class="login-wrap" id="loginWrap">
+  <div class="login-card">
+    <h2>🔐 客服管理后台</h2>
+    <div class="login-err" id="loginErr"></div>
+    <input type="password" id="pwdInput" placeholder="请输入管理密码" autofocus>
+    <button onclick="doLogin()">登 录</button>
+    <p style="text-align:center;margin-top:12px;font-size:12px;color:#9ca3af;">默认密码 admin123（生产环境请在 Render 控制台修改 ADMIN_PASSWORD）</p>
+  </div>
+</div>
+
+<!-- 主界面 -->
+<div class="app" id="app">
+  <div class="topbar">
+    <h1>📮 用户反馈工单 <span id="countBadge" style="font-size:13px;color:#6b7280;font-weight:normal;"></span></h1>
+    <button class="logout" onclick="doLogout()">退出登录</button>
+  </div>
+
+  <div class="filters">
+    <button data-status="" onclick="setFilter(this)">全部</button>
+    <button data-status="pending" onclick="setFilter(this)">待回复</button>
+    <button data-status="replied" onclick="setFilter(this)">已回复</button>
+  </div>
+
+  <div id="ticketList"></div>
+  <div class="empty" id="emptyTip">加载中...</div>
+</div>
+
+<script>
+let currentFilter = '';
+let tickets = [];
+
+// ===== 登录检查 =====
+async function checkLogin() {
+  try {
+    const r = await fetch('/api/admin/feedbacks', { credentials: 'include' });
+    if (r.ok) {
+      document.getElementById('loginWrap').style.display = 'none';
+      document.getElementById('app').classList.add('active');
+      await loadTickets();
+    } else {
+      document.getElementById('loginWrap').style.display = 'flex';
+    }
+  } catch {
+    document.getElementById('loginWrap').style.display = 'flex';
+  }
+}
+
+async function doLogin() {
+  const pwd = document.getElementById('pwdInput').value;
+  if (!pwd) return;
+  try {
+    const r = await fetch('/api/admin/login', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: pwd }),
+    });
+    const d = await r.json();
+    if (d.ok) {
+      document.getElementById('loginWrap').style.display = 'none';
+      document.getElementById('app').classList.add('active');
+      await loadTickets();
+    } else {
+      document.getElementById('loginErr').textContent = d.detail || '登录失败';
+    }
+  } catch (e) {
+    document.getElementById('loginErr').textContent = '网络错误';
+  }
+}
+
+async function doLogout() {
+  await fetch('/api/admin/logout', { method: 'POST', credentials: 'include' });
+  document.getElementById('app').classList.remove('active');
+  document.getElementById('loginWrap').style.display = 'flex';
+  document.getElementById('pwdInput').value = '';
+}
+
+// ===== 工单列表 =====
+async function loadTickets() {
+  try {
+    const url = currentFilter ? `/api/admin/feedbacks?status=${currentFilter}` : '/api/admin/feedbacks';
+    const r = await fetch(url, { credentials: 'include' });
+    if (!r.ok) { if (r.status === 401) doLogout(); return; }
+    const d = await r.json();
+    tickets = d.items || [];
+    render();
+  } catch (e) {
+    document.getElementById('emptyTip').textContent = '加载失败：' + e.message;
+  }
+}
+
+function setFilter(btn) {
+  document.querySelectorAll('.filters button').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  currentFilter = btn.dataset.status;
+  loadTickets();
+}
+
+function render() {
+  const list = document.getElementById('ticketList');
+  const empty = document.getElementById('emptyTip');
+  document.getElementById('countBadge').textContent = `（${tickets.length} 条）`;
+
+  if (tickets.length === 0) {
+    list.innerHTML = '';
+    empty.textContent = '暂无工单';
+    return;
+  }
+  empty.style.display = 'none';
+
+  list.innerHTML = tickets.map(t => `
+    <div class="ticket">
+      <div class="ticket-head">
+        <div>
+          <span class="ticket-status ${t.status}">${t.status === 'pending' ? '⏳ 待回复' : '✅ 已回复'}</span>
+          <span style="margin-left:8px" class="ticket-meta">#${t.id.slice(0, 8)}</span>
+        </div>
+        <span class="ticket-meta">${new Date(t.created_at).toLocaleString('zh-CN')}</span>
+      </div>
+      <div class="ticket-content">${escapeHtml(t.content)}</div>
+      ${t.contact ? `<div class="ticket-contact">📞 联系方式：<span>${escapeHtml(t.contact)}</span></div>` : ''}
+      ${t.admin_reply ? `<div class="ticket-reply">💬 我的回复：\n${escapeHtml(t.admin_reply)}</div>` : ''}
+      <div style="margin-top:10px;">
+        <span class="ticket-toggle" onclick="toggleDetail('${t.id}')">${t.admin_reply ? '重新回复 / 展开' : '展开回复'} ▾</span>
+      </div>
+      <div class="ticket-detail" id="detail-${t.id}">
+        <textarea id="reply-${t.id}" placeholder="输入回复内容...">${t.admin_reply || ''}</textarea>
+        <div class="row">
+          <button class="btn-del" onclick="deleteTicket('${t.id}')">🗑 删除</button>
+          <button class="btn-cancel" onclick="toggleDetail('${t.id}')">取消</button>
+          <button class="btn-reply" onclick="submitReply('${t.id}')">${t.admin_reply ? '更新回复' : '发送回复'}</button>
+        </div>
+      </div>
+    </div>
+  `).join('');
+}
+
+function escapeHtml(s) {
+  if (!s) return '';
+  return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function toggleDetail(id) {
+  const el = document.getElementById('detail-' + id);
+  el.classList.toggle('open');
+  if (el.classList.contains('open')) {
+    setTimeout(() => document.getElementById('reply-' + id).focus(), 50);
+  }
+}
+
+async function submitReply(id) {
+  const reply = document.getElementById('reply-' + id).value.trim();
+  if (!reply) { alert('回复内容不能为空'); return; }
+  try {
+    const r = await fetch(`/api/admin/feedbacks/${id}/reply`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reply }),
+    });
+    if (r.ok) {
+      alert('✅ 回复已发送');
+      await loadTickets();
+    } else {
+      const d = await r.json();
+      alert('回复失败：' + (d.detail || '未知错误'));
+    }
+  } catch (e) { alert('网络错误'); }
+}
+
+async function deleteTicket(id) {
+  if (!confirm('确定删除这条工单吗？')) return;
+  try {
+    const r = await fetch(`/api/admin/feedbacks/${id}`, { method: 'DELETE', credentials: 'include' });
+    if (r.ok) { await loadTickets(); }
+    else alert('删除失败');
+  } catch (e) { alert('网络错误'); }
+}
+
+// 回车登录
+document.getElementById('pwdInput').addEventListener('keydown', e => {
+  if (e.key === 'Enter') doLogin();
+});
+
+// 初始
+checkLogin();
+</script>
+</body>
+</html>

@@ -491,6 +491,8 @@
     <button class="btn" id="addSectionBtn" onclick="openAddSectionModal()" style="background:#059669;color:#fff;display:none;"> 添加板块</button>
     <button class="btn btn-reset" id="undoBtn" onclick="undoEdit()" disabled style="opacity:0.4;cursor:not-allowed;"> 撤销上一步</button>
     <button class="btn" onclick="clearAllData()" style="background:#9ca3af;color:#fff;font-size:11px;padding:5px 10px;"> 清除数据</button>
+    <button class="btn" onclick="openFeedbackModal()" style="background:#ec4899;color:#fff;font-size:11px;padding:5px 10px;"> 💬 反馈</button>
+    <span id="feedbackBadge" onclick="openMyTickets()" style="display:none;font-size:10px;background:#10b981;color:#fff;padding:2px 8px;border-radius:10px;cursor:pointer;margin-right:4px;" title="点击查看回复">📬 有回复</span>
     <span id="quotaDisplay" style="font-size:11px;color:#fff;opacity:0.85;margin-right:4px;">加载中...</span>
     <span id="saveStatus" style="font-size:11px;color:#fff;opacity:0.7;display:none;margin-right:4px;"></span>
     <button class="btn btn-ai" onclick="openJD()"> JD匹配分析</button>
@@ -1034,6 +1036,45 @@
     <div class="actions" style="margin-top:12px;">
       <button class="btn btn-reset" onclick="document.getElementById('premiumModal').classList.remove('active')">稍后再说</button>
       <button class="btn btn-ai" id="activateSubmitBtn" onclick="submitActivateCode()"> 激活</button>
+    </div>
+  </div>
+</div>
+
+<!-- 反馈提交弹窗 -->
+<div class="ai-modal" id="feedbackModal">
+  <div class="ai-modal-content" style="max-width:500px;">
+    <h3>💬 联系客服 / 提反馈</h3>
+    <p style="font-size:13px;color:#6b7280;margin:8px 0 16px;line-height:1.7;">
+      遇到问题？有改进建议？直接告诉我们。<br>
+      我们会认真处理，处理完会在这里回复你（记得来查看哦！）
+    </p>
+    <div style="margin-bottom:12px;">
+      <label style="font-size:13px;color:#374151;font-weight:500;">反馈内容 <span style="color:#dc2626;">*</span></label>
+      <textarea id="feedbackContent" placeholder="请详细描述你的问题或建议..."
+        style="width:100%;min-height:120px;padding:10px;border:1px solid #d1d5db;border-radius:6px;font-size:14px;margin-top:6px;resize:vertical;"></textarea>
+    </div>
+    <div style="margin-bottom:12px;">
+      <label style="font-size:13px;color:#374151;font-weight:500;">联系方式（选填，方便我们主动联系你）</label>
+      <input type="text" id="feedbackContact" placeholder="微信号 / 邮箱 / 手机号"
+        style="width:100%;padding:10px 12px;border:1px solid #d1d5db;border-radius:6px;font-size:14px;margin-top:6px;">
+    </div>
+    <div id="feedbackResult" style="font-size:13px;min-height:20px;margin:4px 0;"></div>
+    <div class="actions" style="margin-top:12px;">
+      <button class="btn btn-reset" onclick="document.getElementById('feedbackModal').classList.remove('active')">取消</button>
+      <button class="btn btn-ai" onclick="submitFeedback()">提交反馈</button>
+      <button class="btn" onclick="openMyTickets();document.getElementById('feedbackModal').classList.remove('active');" style="background:#f3f4f6;color:#374151;">📬 查看我的工单</button>
+    </div>
+  </div>
+</div>
+
+<!-- 我的工单弹窗 -->
+<div class="ai-modal" id="myTicketsModal">
+  <div class="ai-modal-content" style="max-width:560px;">
+    <h3>📬 我的工单</h3>
+    <div id="myTicketsList" style="max-height:420px;overflow-y:auto;margin:12px 0;"></div>
+    <div class="actions" style="margin-top:8px;">
+      <button class="btn btn-reset" onclick="document.getElementById('myTicketsModal').classList.remove('active')">关闭</button>
+      <button class="btn" onclick="document.getElementById('myTicketsModal').classList.remove('active');openFeedbackModal();" style="background:#ec4899;color:#fff;">💬 再提一个</button>
     </div>
   </div>
 </div>
@@ -2306,6 +2347,7 @@
     }
   }
   const DEVICE_FP = generateFingerprint();
+  window.DEVICE_FP = DEVICE_FP;  // 暴露给反馈相关函数使用
 
   /* ---------- 用户配额状态 ---------- */
   let userState = { is_premium: false, remaining: 5, free_limit: 5 };
@@ -2319,6 +2361,7 @@
       if (res.ok) {
         userState = await res.json();
         updateQuotaDisplay();
+        checkMyTickets();  // 检查是否有管理员回复（显示角标）
       }
     } catch (e) {
       console.warn('设备识别失败，降级为本地模式');
@@ -2483,6 +2526,139 @@
     } catch (e) {
       alert('清除失败：' + e.message);
     }
+  }
+
+  /* ---------- AI 客服 / 反馈工单 ---------- */
+  function openFeedbackModal() {
+    document.getElementById('feedbackModal').classList.add('active');
+    document.getElementById('feedbackResult').textContent = '';
+    document.getElementById('feedbackResult').style.color = '';
+  }
+
+  async function submitFeedback() {
+    const content = document.getElementById('feedbackContent').value.trim();
+    const contact = document.getElementById('feedbackContact').value.trim();
+    const resultEl = document.getElementById('feedbackResult');
+    if (!content) {
+      resultEl.textContent = '请填写反馈内容';
+      resultEl.style.color = '#dc2626';
+      return;
+    }
+    if (!window.DEVICE_FP) {
+      resultEl.textContent = '设备指纹未就绪，请刷新页面后重试';
+      resultEl.style.color = '#dc2626';
+      return;
+    }
+    resultEl.textContent = '提交中...';
+    resultEl.style.color = '#374151';
+    try {
+      const resp = await fetch('/api/feedback/submit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fingerprint: window.DEVICE_FP, content, contact }),
+      });
+      const data = await resp.json();
+      if (data.ok) {
+        resultEl.textContent = '✓ 提交成功！我们会尽快处理，你可以点「📬 查看我的工单」看回复';
+        resultEl.style.color = '#059669';
+        document.getElementById('feedbackContent').value = '';
+        document.getElementById('feedbackContact').value = '';
+        checkMyTickets();  // 刷新角标
+      } else {
+        resultEl.textContent = '提交失败：' + (data.detail || '未知错误');
+        resultEl.style.color = '#dc2626';
+      }
+    } catch (e) {
+      resultEl.textContent = '网络错误，请稍后再试';
+      resultEl.style.color = '#dc2626';
+    }
+  }
+
+  async function openMyTickets() {
+    document.getElementById('myTicketsModal').classList.add('active');
+    markTicketsRead();  // 打开即标记已读
+    const listEl = document.getElementById('myTicketsList');
+    listEl.innerHTML = '<div style="text-align:center;color:#9ca3af;padding:30px;">加载中...</div>';
+    try {
+      const resp = await fetch('/api/feedback/mine', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fingerprint: window.DEVICE_FP }),
+      });
+      const data = await resp.json();
+      const items = data.items || [];
+      if (items.length === 0) {
+        listEl.innerHTML = '<div style="text-align:center;color:#9ca3af;padding:30px;">暂无工单</div>';
+        return;
+      }
+      listEl.innerHTML = items.map(t => `
+        <div style="border:1px solid #e5e7eb;border-radius:8px;padding:12px 14px;margin-bottom:10px;background:#fafafa;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+            <span style="font-size:11px;color:#6b7280;">#${t.id.slice(0,8)} · ${formatTime(t.created_at)}</span>
+            <span style="font-size:11px;padding:2px 8px;border-radius:10px;${t.status==='replied'?'background:#d1fae5;color:#065f46;':'background:#fef3c7;color:#92400e;'}">${t.status==='replied'?'✅ 已回复':'⏳ 待回复'}</span>
+          </div>
+          <div style="font-size:13px;color:#374151;white-space:pre-wrap;line-height:1.6;">${escapeHtml(t.content)}</div>
+          ${t.contact ? `<div style="font-size:11px;color:#6b7280;margin-top:4px;">📞 ${escapeHtml(t.contact)}</div>` : ''}
+          ${t.admin_reply ? `
+            <div style="background:#f0fdf4;border-left:3px solid #10b981;padding:8px 12px;margin-top:10px;border-radius:0 6px 6px 0;">
+              <div style="font-size:11px;color:#059669;font-weight:600;margin-bottom:4px;">💬 客服回复 ${t.replied_at? '· '+formatTime(t.replied_at):''}</div>
+              <div style="font-size:13px;color:#065f46;white-space:pre-wrap;line-height:1.6;">${escapeHtml(t.admin_reply)}</div>
+            </div>
+          ` : ''}
+        </div>
+      `).join('');
+    } catch (e) {
+      listEl.innerHTML = '<div style="text-align:center;color:#dc2626;padding:30px;">加载失败</div>';
+    }
+  }
+
+  // 页面加载时检查是否有管理员回复（显示角标）
+  async function checkMyTickets() {
+    try {
+      const resp = await fetch('/api/feedback/mine', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fingerprint: window.DEVICE_FP }),
+      });
+      if (!resp.ok) return;
+      const data = await resp.json();
+      const items = data.items || [];
+      const hasReplied = items.some(t => t.status === 'replied');
+      const badge = document.getElementById('feedbackBadge');
+      if (badge) {
+        badge.style.display = hasReplied ? 'inline-block' : 'none';
+        // 也存一下已读状态（避免每次刷新都显示）
+        const lastRepliedAt = localStorage.getItem('last_seen_reply_at') || '';
+        const latestReplied = items.filter(t => t.status === 'replied').sort((a,b) => (b.replied_at||'').localeCompare(a.replied_at||''))[0];
+        if (latestReplied && lastRepliedAt < (latestReplied.replied_at || '')) {
+          badge.style.background = '#f59e0b';  // 橙色 = 有新回复
+          badge.textContent = '📬 新回复';
+        }
+      }
+    } catch (e) { /* 静默 */ }
+  }
+
+  function markTicketsRead() {
+    localStorage.setItem('last_seen_reply_at', new Date().toISOString());
+    const badge = document.getElementById('feedbackBadge');
+    if (badge) badge.style.display = 'none';
+  }
+
+  function escapeHtml(s) {
+    if (!s) return '';
+    return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+
+  function formatTime(iso) {
+    if (!iso) return '';
+    const d = new Date(iso);
+    const now = new Date();
+    const diff = (now - d) / 1000;
+    if (diff < 60) return '刚刚';
+    if (diff < 3600) return Math.floor(diff/60) + '分钟前';
+    if (diff < 86400) return Math.floor(diff/3600) + '小时前';
+    if (diff < 604800) return Math.floor(diff/86400) + '天前';
+    return d.toLocaleDateString('zh-CN');
   }
 
   /* ---------- 用 LLM 解析 JD 结构化 ---------- */

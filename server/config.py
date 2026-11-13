@@ -55,3 +55,7 @@ NOT_A_RESUME_FLAG = "NOT_A_RESUME"
 # ========== 商业化配置 ==========
 FREE_CALLS_LIMIT = int(os.getenv("FREE_CALLS_LIMIT", "5"))  # 免费 AI 调用次数
 PREMIUM_PRICE = os.getenv("PREMIUM_PRICE", "19.9")          # 买断价格
+
+# ========== AI 客服 / 工单系统 ==========
+FEISHU_WEBHOOK_URL = os.getenv("FEISHU_WEBHOOK_URL", "")    # 飞书群机器人 webhook（用户提交反馈时推送）
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "admin123")    # 管理后台密码（务必改！）

@@ -35,3 +35,7 @@ services:
         sync: false
       - key: REDIS_URL
         sync: false
+      - key: FEISHU_WEBHOOK_URL
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false

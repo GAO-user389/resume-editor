@@ -8,9 +8,12 @@
 """
 import logging
 import os
+import hashlib
+import secrets
 from pathlib import Path
 from typing import Optional
 
+import httpx
 from fastapi import FastAPI, Request, HTTPException, Depends, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, HTMLResponse, FileResponse
@@ -92,6 +95,61 @@ class ActivateRequest(BaseModel):
     """激活码核销请求。"""
     fingerprint: str = Field(..., min_length=10)
     code: str = Field(..., min_length=5)
+
+
+class FeedbackSubmitRequest(BaseModel):
+    """用户提交反馈。"""
+    fingerprint: str = Field(..., min_length=10)
+    content: str = Field(..., min_length=1, max_length=2000)
+    contact: Optional[str] = Field(default="", max_length=200)
+
+
+class AdminReplyRequest(BaseModel):
+    """管理员回复工单。"""
+    reply: str = Field(..., min_length=1, max_length=2000)
+
+
+class AdminLoginRequest(BaseModel):
+    """管理员登录。"""
+    password: str
+
+
+# 管理员 session 存储（内存，重启失效；简单够用）
+_admin_sessions: dict = {}
+
+
+# ========== 飞书 webhook 通知 ==========
+async def notify_feishu_webhook(title: str, content: str):
+    """
+    向飞书群机器人 webhook 推送消息（异步，失败不阻塞主流程）。
+    用户自定义机器人支持 text / post / interactive 消息类型。
+    """
+    webhook = config.FEISHU_WEBHOOK_URL
+    if not webhook:
+        return
+    payload = {
+        "msg_type": "interactive",
+        "card": {
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "title": {"tag": "plain_text", "content": title},
+                "template": "blue",
+            },
+            "elements": [
+                {"tag": "div", "text": {"tag": "plain_text", "content": content}},
+                {"tag": "note", "elements": [
+                    {"tag": "plain_text", "content": "💡 登录管理后台 /admin 查看并回复"}
+                ]},
+            ],
+        },
+    }
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            r = await client.post(webhook, json=payload)
+            if r.status_code != 200:
+                logger.warning("飞书 webhook 推送失败: %s %s", r.status_code, r.text[:200])
+    except Exception as e:
+        logger.warning("飞书 webhook 推送异常: %s", e)
 
 
 # ========== 工具函数 ==========
@@ -388,6 +446,107 @@ def activate_code(req: ActivateRequest, request: Request):
         import traceback
         logger.error("激活码核销失败: %s\n%s", e, traceback.format_exc())
         raise HTTPException(status_code=500, detail="激活服务异常，请稍后再试")
+
+
+# ========== AI 客服：反馈工单 ==========
+@app.post("/api/feedback/submit", tags=["feedback"])
+async def submit_feedback(req: FeedbackSubmitRequest, request: Request):
+    """用户提交反馈工单。"""
+    ip = get_client_ip(request)
+    try:
+        fb = db.create_feedback(req.fingerprint, req.content.strip(), (req.contact or "").strip())
+        logger.info("反馈已提交 ip=%s fid=%s", ip, fb["id"])
+        # 异步飞书通知（不等待）
+        try:
+            await notify_feishu_webhook(
+                title="📮 新用户反馈",
+                content=f"用户 IP: {ip}\n联系方式: {req.contact or '（未留）'}\n\n{req.content[:500]}",
+            )
+        except Exception:
+            pass
+        return JSONResponse(content={"ok": True, "feedback": fb})
+    except Exception as e:
+        logger.error("反馈提交失败: %s", e)
+        raise HTTPException(status_code=500, detail="反馈提交失败，请稍后再试")
+
+
+@app.post("/api/feedback/mine", tags=["feedback"])
+def my_feedbacks(req: IdentifyRequest, request: Request):
+    """查询当前用户的所有工单（含管理员回复）。"""
+    try:
+        items = db.list_my_feedbacks(req.fingerprint)
+        return JSONResponse(content={"items": items})
+    except Exception as e:
+        logger.error("查询反馈失败: %s", e)
+        raise HTTPException(status_code=500, detail="查询失败")
+
+
+# ========== 管理员 API ==========
+def _require_admin(request: Request):
+    """简单管理员鉴权：cookie 里的 session_id 必须在内存里。"""
+    sid = request.cookies.get("admin_session", "")
+    if sid not in _admin_sessions:
+        raise HTTPException(status_code=401, detail="未登录")
+    return True
+
+
+@app.post("/api/admin/login", tags=["admin"])
+def admin_login(req: AdminLoginRequest, request: Request):
+    """管理员登录（成功返回 set-cookie）。"""
+    pwd_hash = hashlib.sha256(req.password.encode()).hexdigest()
+    expected = hashlib.sha256(config.ADMIN_PASSWORD.encode()).hexdigest()
+    if pwd_hash != expected:
+        return JSONResponse(status_code=401, content={"ok": False, "detail": "密码错误"})
+    sid = secrets.token_urlsafe(32)
+    _admin_sessions[sid] = True
+    resp = JSONResponse(content={"ok": True})
+    resp.set_cookie("admin_session", sid, httponly=True, max_age=86400, samesite="lax")
+    return resp
+
+
+@app.post("/api/admin/logout", tags=["admin"])
+def admin_logout(request: Request):
+    sid = request.cookies.get("admin_session", "")
+    _admin_sessions.pop(sid, None)
+    resp = JSONResponse(content={"ok": True})
+    resp.delete_cookie("admin_session")
+    return resp
+
+
+@app.get("/api/admin/feedbacks", tags=["admin"])
+def admin_list_feedbacks(status: Optional[str] = None, limit: int = 100,
+                         _: bool = Depends(_require_admin)):
+    """管理员列出所有工单。"""
+    items = db.list_all_feedbacks(status=status, limit=min(limit, 500))
+    return JSONResponse(content={"items": items})
+
+
+@app.post("/api/admin/feedbacks/{feedback_id}/reply", tags=["admin"])
+def admin_reply(feedback_id: str, req: AdminReplyRequest,
+                _: bool = Depends(_require_admin)):
+    """管理员回复工单。"""
+    ok = db.reply_feedback(feedback_id, req.reply.strip())
+    if not ok:
+        raise HTTPException(status_code=404, detail="工单不存在")
+    return JSONResponse(content={"ok": True})
+
+
+@app.delete("/api/admin/feedbacks/{feedback_id}", tags=["admin"])
+def admin_delete(feedback_id: str, _: bool = Depends(_require_admin)):
+    """管理员删除工单。"""
+    ok = db.delete_feedback(feedback_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="工单不存在")
+    return JSONResponse(content={"ok": True})
+
+
+@app.get("/admin", response_class=HTMLResponse, tags=["admin"])
+def admin_page():
+    """管理后台页面。"""
+    html_path = FRONTEND_DIR / "admin.html"
+    if html_path.exists():
+        return FileResponse(html_path, media_type="text/html")
+    return HTMLResponse(content="<h1>admin.html not found</h1>", status_code=404)
 
 
 # ========== 统一异常处理 ==========

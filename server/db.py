@@ -4,6 +4,7 @@
 - 用户（设备指纹）管理
 - 免费次数计数
 - 激活码验证与核销
+- 反馈工单系统
 """
 import os
 import time
@@ -171,3 +172,91 @@ def is_db_available() -> bool:
             return True
     except Exception:
         return False
+
+
+# ========== 反馈工单 ==========
+def create_feedback(fingerprint: str, content: str, contact: str = "") -> dict:
+    """用户提交反馈，返回工单信息。"""
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO feedbacks (fingerprint, content, contact, status) "
+            "VALUES (%s, %s, %s, 'pending') RETURNING id, created_at",
+            (fingerprint, content, contact),
+        )
+        row = cur.fetchone()
+        return {"id": str(row[0]), "created_at": row[1].isoformat()}
+
+
+def list_my_feedbacks(fingerprint: str) -> list:
+    """查询当前用户的所有工单（含管理员回复）。"""
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id, content, contact, status, admin_reply, created_at, replied_at "
+            "FROM feedbacks WHERE fingerprint = %s ORDER BY created_at DESC",
+            (fingerprint,),
+        )
+        return [
+            {
+                "id": str(r[0]),
+                "content": r[1],
+                "contact": r[2] or "",
+                "status": r[3],
+                "admin_reply": r[4] or "",
+                "created_at": r[5].isoformat() if r[5] else "",
+                "replied_at": r[6].isoformat() if r[6] else "",
+            }
+            for r in cur.fetchall()
+        ]
+
+
+def list_all_feedbacks(status: str = None, limit: int = 100) -> list:
+    """管理员：列出所有工单。status 可选过滤。"""
+    with get_conn() as conn:
+        cur = conn.cursor()
+        if status:
+            cur.execute(
+                "SELECT id, fingerprint, content, contact, status, admin_reply, created_at, replied_at "
+                "FROM feedbacks WHERE status = %s ORDER BY created_at DESC LIMIT %s",
+                (status, limit),
+            )
+        else:
+            cur.execute(
+                "SELECT id, fingerprint, content, contact, status, admin_reply, created_at, replied_at "
+                "FROM feedbacks ORDER BY created_at DESC LIMIT %s",
+                (limit,),
+            )
+        return [
+            {
+                "id": str(r[0]),
+                "fingerprint": r[1][:12] + "..." if r[1] else "",
+                "content": r[2],
+                "contact": r[3] or "",
+                "status": r[4],
+                "admin_reply": r[5] or "",
+                "created_at": r[6].isoformat() if r[6] else "",
+                "replied_at": r[7].isoformat() if r[7] else "",
+            }
+            for r in cur.fetchall()
+        ]
+
+
+def reply_feedback(feedback_id: str, reply: str) -> bool:
+    """管理员回复工单。"""
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE feedbacks SET admin_reply = %s, status = 'replied', replied_at = NOW() "
+            "WHERE id = %s RETURNING id",
+            (reply, feedback_id),
+        )
+        return cur.fetchone() is not None
+
+
+def delete_feedback(feedback_id: str) -> bool:
+    """管理员删除工单。"""
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM feedbacks WHERE id = %s RETURNING id", (feedback_id,))
+        return cur.fetchone() is not None
