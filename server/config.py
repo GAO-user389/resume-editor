@@ -63,6 +63,7 @@ ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "admin123")    # 管理后台密码
 # ========== 邮件通知（管理员回复工单时自动发邮件给用户）==========
 # Resend HTTP API（推荐，Render Free 版可用）—— 免费每天 100 封
 RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")           # 从 https://resend.com 注册获取
+SENDGRID_API_KEY = os.getenv("SENDGRID_API_KEY", "")       # 从 https://sendgrid.com 注册获取（免费版无需域名验证）
 
 # 以下是 SMTP 备用（Render Free 版出网被屏蔽，基本不可用）
 EMAIL_SMTP_HOST = os.getenv("EMAIL_SMTP_HOST", "smtp.qq.com")

@@ -1,7 +1,9 @@
 # -*- coding: utf-8 -*-
-"""邮件发送模块 —— 支持 Resend HTTP API（推荐）或 SMTP 自动降级。
+"""邮件发送模块 —— 支持 SendGrid > Resend > SMTP 自动降级。
 
-Render Free 版出网屏蔽 SMTP 465/587 端口，但 HTTP 出站正常 → Resend 最佳。
+优先级：SendGrid HTTP API（无需域名验证，可发任意邮箱）
+     → Resend HTTP API（需验证域名才能发非自有邮箱）
+     → SMTP（Render Free 版出网屏蔽，备用）
 """
 import json
 import logging
@@ -10,6 +12,37 @@ import urllib.error
 from . import config
 
 logger = logging.getLogger(__name__)
+
+
+def _send_sendgrid(to_email: str, subject: str, html_body: str, plain_body: str = "") -> bool:
+    """SendGrid HTTP API 发邮件（免费版无需域名验证，可发任意邮箱）。"""
+    import httpx
+
+    payload = {
+        "personalizations": [{"to": [{"email": to_email}]}],
+        "from": {"email": config.EMAIL_USER, "name": config.EMAIL_FROM_NAME},
+        "subject": subject,
+        "content": [{"type": "text/html", "value": html_body}],
+    }
+    if plain_body:
+        payload["content"].insert(0, {"type": "text/plain", "value": plain_body})
+
+    try:
+        resp = httpx.post(
+            "https://api.sendgrid.com/v3/mail/send",
+            json=payload,
+            headers={"Authorization": f"Bearer {config.SENDGRID_API_KEY}"},
+            timeout=15,
+        )
+        if resp.status_code in (200, 202):
+            logger.info("SendGrid 发送成功 to=%s", to_email)
+            return True
+        else:
+            logger.error("SendGrid HTTP %d to=%s: %s", resp.status_code, to_email, resp.text[:300])
+            return False
+    except Exception as e:
+        logger.error("SendGrid 发送异常 to=%s: %s", to_email, e)
+        return False
 
 
 def _send_resend(to_email: str, subject: str, html_body: str, plain_body: str = "") -> bool:
@@ -83,7 +116,7 @@ def _send_smtp(to_email: str, subject: str, html_body: str, plain_body: str = ""
 
 def send_email(to_email: str, subject: str, html_body: str, plain_body: str = "") -> bool:
     """
-    发送邮件。优先 Resend HTTP API，没配再试 SMTP。
+    发送邮件。优先级：SendGrid > Resend > SMTP 自动降级。
     
     Args:
         to_email: 收件人邮箱
@@ -97,11 +130,15 @@ def send_email(to_email: str, subject: str, html_body: str, plain_body: str = ""
         logger.warning("收件邮箱无效: %s", to_email)
         return False
 
-    # 优先 Resend（Render 稳定）
+    # 1. SendGrid（免费版无需域名验证，可发任意邮箱）
+    if config.SENDGRID_API_KEY:
+        return _send_sendgrid(to_email, subject, html_body, plain_body)
+
+    # 2. Resend（需验证域名才能发非自有邮箱）
     if config.RESEND_API_KEY:
         return _send_resend(to_email, subject, html_body, plain_body)
 
-    # 降级 SMTP
+    # 3. 降级 SMTP（Render Free 不可用）
     return _send_smtp(to_email, subject, html_body, plain_body)
 
 

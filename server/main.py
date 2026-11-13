@@ -812,53 +812,77 @@ def admin_delete(feedback_id: str, _: bool = Depends(_require_admin)):
 
 @app.get("/api/admin/test-smtp", tags=["admin"])
 def admin_test_smtp(_: bool = Depends(_require_admin)):
-    """调试用：同步测试邮件连通性，直接返回 Resend API 的真实结果。"""
+    """调试用：同步测试邮件连通性。优先 SendGrid > Resend。"""
     from . import config
     import httpx
 
     result = {
+        "sendgrid_configured": bool(config.SENDGRID_API_KEY),
         "resend_configured": bool(config.RESEND_API_KEY),
         "email_user": config.EMAIL_USER,
         "email_user_masked": (config.EMAIL_USER[:3] + "***" + config.EMAIL_USER[-8:]) if config.EMAIL_USER else "",
     }
 
-    if not config.RESEND_API_KEY:
-        result["error"] = "RESEND_API_KEY 未配置"
+    if not config.SENDGRID_API_KEY and not config.RESEND_API_KEY:
+        result["error"] = "SENDGRID_API_KEY 和 RESEND_API_KEY 都未配置"
         return JSONResponse(content=result)
 
-    to = config.EMAIL_USER or "XGTX20020526@163.com"
-    payload = {
-        "from": f"{config.EMAIL_FROM_NAME} <{config.EMAIL_USER}>",
-        "to": [to],
-        "subject": "简历编辑器 Resend 测试",
-        "html": "<h2>✅ Resend OK!</h2><p>这是同步测试邮件。</p>",
-    }
+    to = "XGTX20020526@163.com"  # 固定发到管理员邮箱
 
-    try:
-        resp = httpx.post(
-            "https://api.resend.com/emails",
-            json=payload,
-            headers={"Authorization": f"Bearer {config.RESEND_API_KEY}"},
-            timeout=20,
-        )
-        result["resend_http_status"] = resp.status_code
-        result["resend_response"] = resp.text[:500]
-        result["success"] = resp.status_code in (200, 201)
-        if result["success"]:
-            data = resp.json()
-            result["resend_email_id"] = data.get("id", "")
-    except Exception as e:
-        import traceback
-        result["error"] = str(e)
-        result["traceback"] = traceback.format_exc()[-500:]
-        result["success"] = False
+    # 优先 SendGrid
+    if config.SENDGRID_API_KEY:
+        payload = {
+            "personalizations": [{"to": [{"email": to}]}],
+            "from": {"email": config.EMAIL_USER, "name": config.EMAIL_FROM_NAME},
+            "subject": "简历编辑器 SendGrid 测试",
+            "content": [
+                {"type": "text/plain", "value": "✅ SendGrid OK!"},
+                {"type": "text/html", "value": "<h2>✅ SendGrid OK!</h2><p>这是同步测试邮件。</p>"},
+            ],
+        }
+        try:
+            resp = httpx.post(
+                "https://api.sendgrid.com/v3/mail/send",
+                json=payload,
+                headers={"Authorization": f"Bearer {config.SENDGRID_API_KEY}"},
+                timeout=20,
+            )
+            result["provider"] = "sendgrid"
+            result["sendgrid_http_status"] = resp.status_code
+            result["sendgrid_response"] = resp.text[:500]
+            result["success"] = resp.status_code in (200, 202)
+        except Exception as e:
+            result["error"] = str(e)
+            result["success"] = False
+    else:
+        # Resend 降级
+        payload = {
+            "from": f"{config.EMAIL_FROM_NAME} <{config.EMAIL_USER}>",
+            "to": [to],
+            "subject": "简历编辑器 Resend 测试",
+            "html": "<h2>✅ Resend OK!</h2><p>这是同步测试邮件。</p>",
+        }
+        try:
+            resp = httpx.post(
+                "https://api.resend.com/emails",
+                json=payload,
+                headers={"Authorization": f"Bearer {config.RESEND_API_KEY}"},
+                timeout=20,
+            )
+            result["provider"] = "resend"
+            result["resend_http_status"] = resp.status_code
+            result["resend_response"] = resp.text[:500]
+            result["success"] = resp.status_code in (200, 201)
+        except Exception as e:
+            result["error"] = str(e)
+            result["success"] = False
 
     return JSONResponse(content=result)
 
 
 @app.get("/api/admin/send-test-email", tags=["admin"])
 def admin_send_test_email(to: str = "XGTX20020526@163.com", _: bool = Depends(_require_admin)):
-    """调试用：同步发一封邮件到指定收件人，返回 Resend 完整 HTTP 结果。"""
+    """调试用：同步发一封邮件到指定收件人。优先 SendGrid。"""
     from . import config
     import httpx
 
@@ -867,40 +891,62 @@ def admin_send_test_email(to: str = "XGTX20020526@163.com", _: bool = Depends(_r
         "to": to,
     }
 
-    if not config.RESEND_API_KEY:
-        result["error"] = "RESEND_API_KEY 未配置"
+    if not config.SENDGRID_API_KEY and not config.RESEND_API_KEY:
+        result["error"] = "SENDGRID_API_KEY 和 RESEND_API_KEY 都未配置"
         return JSONResponse(status_code=400, content=result)
 
-    payload = {
-        "from": f"{config.EMAIL_FROM_NAME} <{config.EMAIL_USER}>",
-        "to": [to],
-        "subject": "简历编辑器 Resend 同步测试",
-        "html": "<h2>✅ 这是一封同步测试邮件</h2><p>如果你收到了，说明 Resend + Render 全链路通了！</p>",
-        "text": "✅ 这是一封同步测试邮件，收到说明 Resend + Render 全链路通了！",
-    }
-
-    try:
-        resp = httpx.post(
-            "https://api.resend.com/emails",
-            json=payload,
-            headers={"Authorization": f"Bearer {config.RESEND_API_KEY}"},
-            timeout=20,
-        )
-        result["resend_http_status"] = resp.status_code
-        result["resend_full_response"] = resp.text[:1000]
-        result["success"] = resp.status_code in (200, 201)
-        if result["success"]:
-            data = resp.json()
-            result["resend_email_id"] = data.get("id", "")
-            logger.info("同步测试邮件已发送 to=%s id=%s", to, data.get("id"))
-        else:
-            logger.error("同步测试邮件失败 HTTP %d to=%s: %s", resp.status_code, to, resp.text[:300])
-    except Exception as e:
-        import traceback
-        result["error"] = str(e)
-        result["traceback"] = traceback.format_exc()[-500:]
-        result["success"] = False
-        logger.error("同步测试邮件异常 to=%s: %s", to, e)
+    # 优先 SendGrid
+    if config.SENDGRID_API_KEY:
+        payload = {
+            "personalizations": [{"to": [{"email": to}]}],
+            "from": {"email": config.EMAIL_USER, "name": config.EMAIL_FROM_NAME},
+            "subject": "简历编辑器 SendGrid 同步测试",
+            "content": [
+                {"type": "text/plain", "value": "✅ 同步测试邮件，收到说明 SendGrid + Render 通了！"},
+                {"type": "text/html", "value": "<h2>✅ SendGrid 同步测试</h2><p>如果你收到了，说明 SendGrid + Render 全链路通了！</p>"},
+            ],
+        }
+        try:
+            resp = httpx.post(
+                "https://api.sendgrid.com/v3/mail/send",
+                json=payload,
+                headers={"Authorization": f"Bearer {config.SENDGRID_API_KEY}"},
+                timeout=20,
+            )
+            result["provider"] = "sendgrid"
+            result["http_status"] = resp.status_code
+            result["full_response"] = resp.text[:1000]
+            result["success"] = resp.status_code in (200, 202)
+        except Exception as e:
+            import traceback
+            result["error"] = str(e)
+            result["traceback"] = traceback.format_exc()[-500:]
+            result["success"] = False
+    else:
+        # Resend 降级
+        payload = {
+            "from": f"{config.EMAIL_FROM_NAME} <{config.EMAIL_USER}>",
+            "to": [to],
+            "subject": "简历编辑器 Resend 同步测试",
+            "html": "<h2>✅ Resend 同步测试</h2><p>如果你收到了，说明 Resend + Render 全链路通了！</p>",
+            "text": "✅ 同步测试邮件，收到说明 Resend + Render 通了！",
+        }
+        try:
+            resp = httpx.post(
+                "https://api.resend.com/emails",
+                json=payload,
+                headers={"Authorization": f"Bearer {config.RESEND_API_KEY}"},
+                timeout=20,
+            )
+            result["provider"] = "resend"
+            result["http_status"] = resp.status_code
+            result["full_response"] = resp.text[:1000]
+            result["success"] = resp.status_code in (200, 201)
+        except Exception as e:
+            import traceback
+            result["error"] = str(e)
+            result["traceback"] = traceback.format_exc()[-500:]
+            result["success"] = False
 
     return JSONResponse(content=result)
 
