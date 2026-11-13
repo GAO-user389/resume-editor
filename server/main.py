@@ -856,6 +856,55 @@ def admin_test_smtp(_: bool = Depends(_require_admin)):
     return JSONResponse(content=result)
 
 
+@app.get("/api/admin/send-test-email", tags=["admin"])
+def admin_send_test_email(to: str = "XGTX20020526@163.com", _: bool = Depends(_require_admin)):
+    """调试用：同步发一封邮件到指定收件人，返回 Resend 完整 HTTP 结果。"""
+    from . import config
+    import httpx
+
+    result = {
+        "from": f"{config.EMAIL_FROM_NAME} <{config.EMAIL_USER}>",
+        "to": to,
+    }
+
+    if not config.RESEND_API_KEY:
+        result["error"] = "RESEND_API_KEY 未配置"
+        return JSONResponse(status_code=400, content=result)
+
+    payload = {
+        "from": f"{config.EMAIL_FROM_NAME} <{config.EMAIL_USER}>",
+        "to": [to],
+        "subject": "简历编辑器 Resend 同步测试",
+        "html": "<h2>✅ 这是一封同步测试邮件</h2><p>如果你收到了，说明 Resend + Render 全链路通了！</p>",
+        "text": "✅ 这是一封同步测试邮件，收到说明 Resend + Render 全链路通了！",
+    }
+
+    try:
+        resp = httpx.post(
+            "https://api.resend.com/emails",
+            json=payload,
+            headers={"Authorization": f"Bearer {config.RESEND_API_KEY}"},
+            timeout=20,
+        )
+        result["resend_http_status"] = resp.status_code
+        result["resend_full_response"] = resp.text[:1000]
+        result["success"] = resp.status_code in (200, 201)
+        if result["success"]:
+            data = resp.json()
+            result["resend_email_id"] = data.get("id", "")
+            logger.info("同步测试邮件已发送 to=%s id=%s", to, data.get("id"))
+        else:
+            logger.error("同步测试邮件失败 HTTP %d to=%s: %s", resp.status_code, to, resp.text[:300])
+    except Exception as e:
+        import traceback
+        result["error"] = str(e)
+        result["traceback"] = traceback.format_exc()[-500:]
+        result["success"] = False
+        logger.error("同步测试邮件异常 to=%s: %s", to, e)
+
+    return JSONResponse(content=result)
+
+
 @app.get("/admin", response_class=HTMLResponse, tags=["admin"])
 def admin_page():
     """管理后台页面。"""
