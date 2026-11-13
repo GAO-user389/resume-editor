@@ -470,13 +470,13 @@ def activate_code(req: ActivateRequest, request: Request):
 
 # ========== AI 客服：反馈工单 ==========
 
-def _run_ai_feedback_analysis(feedback_id: str, content: str, image_base64: str):
+def _run_ai_feedback_analysis(feedback_id: str, content: str, image_base64: str, fingerprint: str = ""):
     """
     AI 自动分析反馈（同步调用）。
-    产出两个结果：
+    三个结果：
       1. ai_analysis — 给用户/管理员看的诊断
       2. ai_fix_plan — 给管理员看的修复方案
-    既可 submit 时异步触发（fire-and-forget），也可查询时同步惰性触发。
+      3. 自动发激活码 — 如果识别到付款截图（¥9.9/¥19.9），直接发码
     """
     import threading
     try:
@@ -491,6 +491,9 @@ def _run_ai_feedback_analysis(feedback_id: str, content: str, image_base64: str)
             except Exception:
                 ocr_text = "（截图识别失败）"
 
+        # ===== 新增：付款截图识别 + 自动发激活码 =====
+        auto_code_result = _try_auto_issue_code(feedback_id, content, ocr_text, fingerprint)
+
         # ===== 第一步：AI 诊断 =====
         context_text = content + (f"\n\n[截图识别内容]\n{ocr_text}" if ocr_text else "")
         analysis_prompt = f"""请分析以下用户反馈，判断问题类型、严重程度，并给出可能原因和解决建议。
@@ -500,7 +503,7 @@ def _run_ai_feedback_analysis(feedback_id: str, content: str, image_base64: str)
 
 请严格按以下 JSON 格式输出，只输出 JSON：
 {{
-  "category": "问题分类（功能Bug/UI问题/性能/使用困惑/功能请求/其他）",
+  "category": "问题分类（功能Bug/UI问题/性能/使用困惑/功能请求/付款购买/其他）",
   "severity": "严重程度（high/medium/low）",
   "possible_cause": "可能原因分析，50字以内",
   "suggestion": "给用户的解决建议，100字以内",
@@ -517,12 +520,108 @@ def _run_ai_feedback_analysis(feedback_id: str, content: str, image_base64: str)
         if category in ("功能Bug", "UI问题", "性能"):
             fix_plan_text = _generate_fix_plan(context_text, analysis_json or {})
 
-        # 存数据库（用新的 save_ai_results）
+        # 如果 AI 已经自动发了码，把发码信息拼进 analysis 里让用户能看到
+        if auto_code_result and auto_code_result.get("ok"):
+            plan_label = "永久版" if auto_code_result["plan"] == "permanent" else f"30天版（到期 {auto_code_result['expires_at'][:10] if auto_code_result.get('expires_at') else ''}）"
+            auto_section = f"\n\n{'='*20}\n🎉 <b>AI 客服已自动识别付款截图并发放激活码！</b>\n\n<b>你的激活码：{auto_code_result['code']}</b>\n\n套餐：{plan_label}\n\n直接复制激活码，去简历编辑器顶栏点「⚡ 升级」按钮粘贴即可激活。\n{'='*20}\n"
+            analysis_text = auto_section + analysis_text
+            # 同时把激活码直接写进 admin_reply，让用户刷新时角标能看到
+            reply_text = f"🎉 AI 客服自动识别付款成功，已发放激活码：\n\n<b>{auto_code_result['code']}</b>\n\n点击顶栏「⚡ 升级」→ 输入激活码即可。"
+            # 用 fingerprint 找 feedbacks表里的 user_id
+            try:
+                with db.get_conn() as conn:
+                    cur = conn.cursor()
+                    cur.execute(
+                        "UPDATE feedbacks SET admin_reply = %s, status = 'replied', replied_at = NOW() WHERE id = %s",
+                        (reply_text, feedback_id),
+                    )
+                    conn.commit()
+            except Exception:
+                pass
+
+        # 存数据库
         db.save_ai_results(feedback_id, analysis_text, fix_plan_text)
-        logger.info("AI 反馈分析完成 fid=%s category=%s has_fix=%s", feedback_id, category, bool(fix_plan_text))
+        logger.info("AI 反馈分析完成 fid=%s category=%s has_fix=%s auto_code=%s", feedback_id, category, bool(fix_plan_text), bool(auto_code_result and auto_code_result.get("ok")))
     except Exception as e:
         import traceback
         logger.warning("AI 反馈分析失败 fid=%s: %s\n%s", feedback_id, e, traceback.format_exc())
+
+
+def _try_auto_issue_code(feedback_id: str, content: str, ocr_text: str, fingerprint: str) -> dict | None:
+    """
+    尝试自动识别付款截图并发激活码。
+    返回 {"ok": True, "code": str, "plan": str, "expires_at": str|None} 或 None。
+    """
+    if not ocr_text and not content:
+        return None  # 没内容没截图，跳过
+
+    # 拼上下文让 AI 判断
+    text = (content or "") + "\n" + (ocr_text or "")
+    # 快速关键词初筛（省 API 调用，OCR 没识别出来就不走）
+    price_found = None
+    if "19.9" in text or "19.90" in text:
+        price_found = "permanent"
+    elif "9.9" in text or "9.90" in text:
+        price_found = "monthly"
+
+    # 也可能用户文字说明，比如"我买了19.9的永久"
+    if not price_found:
+        if any(k in text for k in ["永久", "permanent", "高级模板"]):
+            price_found = "permanent"
+        elif any(k in text for k in ["30天", "月度", "monthly", "9.9"]):
+            price_found = "monthly"
+
+    if not price_found:
+        return None
+
+    # 进一步确认是不是付款截图场景（防误判）
+    # 给轻量 prompt 验证
+    try:
+        verify_prompt = f"""判断以下内容是否为用户付款成功的截图/文字，准备购买简历编辑器的激活码。
+用户说：{content[:200]}
+截图识别内容：{ocr_text[:500]}
+
+输出 JSON：{{"is_payment": true/false, "amount": "9.9"|"19.9"|"unknown"}}"""
+        verify_raw = call_llm(verify_prompt, system_prompt="你是支付验证助手，严格按 JSON 输出。")
+        verify_json = _safe_parse_json(verify_raw)
+        if not verify_json or not verify_json.get("is_payment"):
+            return None
+        amount = verify_json.get("amount", "unknown")
+        if amount == "9.9":
+            price_found = "monthly"
+        elif amount == "19.9":
+            price_found = "permanent"
+        else:
+            return None
+    except Exception as e:
+        logger.warning("付款验证 AI 调用失败，跳过自动发码 fid=%s: %s", feedback_id, e)
+        return None
+
+    # 验证通过 → 取码！
+    # 先找 feedback 关联的 user_id
+    user_id = None
+    if fingerprint:
+        try:
+            with db.get_conn() as conn:
+                cur = conn.cursor()
+                cur.execute("SELECT id FROM users WHERE fingerprint = %s", (fingerprint,))
+                r = cur.fetchone()
+                if r:
+                    user_id = str(r[0])
+        except Exception:
+            pass
+
+    if not user_id:
+        # 没找到用户也没关系，用 feedback_id 临时占位
+        user_id = f"feedback-{feedback_id}"
+
+    result = db.claim_unused_code(price_found, user_id, fingerprint)
+    if not result.get("ok"):
+        logger.warning("AI 自动发码失败 fid=%s: %s", feedback_id, result.get("reason", "unknown"))
+        return None
+
+    logger.info("🎉 AI 客服自动发码成功 fid=%s plan=%s code=%s", feedback_id, price_found, result["code"])
+    return result
 
 
 def _generate_fix_plan(context_text: str, analysis: dict) -> str:
@@ -645,7 +744,7 @@ async def submit_feedback(req: FeedbackSubmitRequest, request: Request):
         import threading
         threading.Thread(
             target=_run_ai_feedback_analysis,
-            args=(fb["id"], req.content, req.image_base64 or ""),
+            args=(fb["id"], req.content, req.image_base64 or "", req.fingerprint),
             daemon=True,
         ).start()
 

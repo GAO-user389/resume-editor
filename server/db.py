@@ -263,6 +263,58 @@ def list_unused_codes() -> list:
         return [r[0] for r in cur.fetchall()]
 
 
+def claim_unused_code(plan: str, user_id: str, fingerprint: str = None) -> dict:
+    """
+    AI 自动发码专用：从 activation_codes 取一个未使用的指定档位激活码，
+    标记已使用并绑定到用户。返回 {"ok": True, "code": str, "plan": str, "expires_at": str|None}。
+    """
+    with get_conn() as conn:
+        cur = conn.cursor()
+        # 取一个该档位最早创建的未使用码（FIFO）
+        cur.execute(
+            "SELECT id, code FROM activation_codes WHERE plan = %s AND is_used = FALSE ORDER BY created_at ASC LIMIT 1",
+            (plan,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return {"ok": False, "reason": f"没有可用的 {plan} 激活码了"}
+
+        code_id, code = row[0], row[1]
+        # 标记已使用
+        cur.execute(
+            "UPDATE activation_codes SET is_used = TRUE, used_by = %s, used_at = NOW() WHERE id = %s",
+            (user_id, code_id),
+        )
+
+        # 计算 expires_at（从激活码表的 days 字段）
+        cur.execute("SELECT days FROM activation_codes WHERE id = %s", (code_id,))
+        days_row = cur.fetchone()
+        days = days_row[0] if days_row else None
+
+        expires_at = None
+        if plan == 'monthly' and days:
+            expires_at = datetime.utcnow() + timedelta(days=days)
+
+        # 关联用户（如果能通过 fingerprint 找到）
+        if fingerprint:
+            cur.execute("SELECT id FROM users WHERE fingerprint = %s", (fingerprint,))
+            u = cur.fetchone()
+            if u:
+                u_id = u[0]
+                cur.execute(
+                    "UPDATE users SET plan = %s, expires_at = %s, activation_code_id = %s, updated_at = NOW() WHERE id = %s",
+                    (plan, expires_at, code_id, u_id),
+                )
+
+        conn.commit()
+        return {
+            "ok": True,
+            "code": code,
+            "plan": plan,
+            "expires_at": expires_at.isoformat() if expires_at else None,
+        }
+
+
 # ========== 数据库可用性检测 ==========
 def is_db_available() -> bool:
     """检测数据库是否可用。"""
