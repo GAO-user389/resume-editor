@@ -13,8 +13,9 @@ logger = logging.getLogger(__name__)
 
 
 def _send_resend(to_email: str, subject: str, html_body: str, plain_body: str = "") -> bool:
-    """用 Resend HTTP API 发邮件（Render 上首选）。"""
-    url = "https://api.resend.com/emails"
+    """用 Resend HTTP API 发邮件（Render 上首选，HTTP 出站正常）。"""
+    import requests as req_lib
+
     payload = {
         "from": f"{config.EMAIL_FROM_NAME} <{config.EMAIL_USER}>",
         "to": [to_email],
@@ -24,20 +25,20 @@ def _send_resend(to_email: str, subject: str, html_body: str, plain_body: str = 
     if plain_body:
         payload["text"] = plain_body
 
-    data = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(url, data=data, method="POST")
-    req.add_header("Content-Type", "application/json")
-    req.add_header("Authorization", f"Bearer {config.RESEND_API_KEY}")
-
     try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            result = json.loads(resp.read().decode("utf-8"))
+        resp = req_lib.post(
+            "https://api.resend.com/emails",
+            json=payload,
+            headers={"Authorization": f"Bearer {config.RESEND_API_KEY}"},
+            timeout=15,
+        )
+        if resp.status_code in (200, 201):
+            result = resp.json()
             logger.info("Resend 发送成功 to=%s id=%s", to_email, result.get("id", ""))
             return True
-    except urllib.error.HTTPError as e:
-        body = e.read().decode("utf-8", errors="replace")
-        logger.error("Resend HTTP 错误 %d to=%s: %s", e.code, to_email, body[:300])
-        return False
+        else:
+            logger.error("Resend HTTP %d to=%s: %s", resp.status_code, to_email, resp.text[:300])
+            return False
     except Exception as e:
         logger.error("Resend 发送异常 to=%s: %s", to_email, e)
         return False
