@@ -116,22 +116,16 @@ def verify_and_use_code(code: str, user_id: str) -> bool:
     code = code.strip().upper()
     with get_conn() as conn:
         cur = conn.cursor()
-        # 查找激活码（加行锁防并发）
+        # 条件更新：只更新未使用的激活码（天然防并发，兼容 pooler）
         cur.execute(
-            "SELECT id, is_used FROM activation_codes WHERE code = %s FOR UPDATE",
-            (code,),
+            "UPDATE activation_codes SET is_used = TRUE, used_by = %s, used_at = NOW() "
+            "WHERE code = %s AND is_used = FALSE RETURNING id",
+            (user_id, code),
         )
         row = cur.fetchone()
         if not row:
-            return False
-        code_id, is_used = row
-        if is_used:
-            return False
-        # 核销：标记已用，更新用户为 premium
-        cur.execute(
-            "UPDATE activation_codes SET is_used = TRUE, used_by = %s, used_at = NOW() WHERE id = %s",
-            (user_id, code_id),
-        )
+            return False  # 激活码不存在或已被使用
+        code_id = row[0]
         cur.execute(
             "UPDATE users SET is_premium = TRUE, activation_code_id = %s, updated_at = NOW() WHERE id = %s",
             (code_id, user_id),
