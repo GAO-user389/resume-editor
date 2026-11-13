@@ -451,14 +451,15 @@ def activate_code(req: ActivateRequest, request: Request):
 
 # ========== AI 客服：反馈工单 ==========
 
-async def _run_ai_feedback_analysis(feedback_id: str, content: str, image_base64: str):
+def _run_ai_feedback_analysis(feedback_id: str, content: str, image_base64: str):
     """
-    后台任务：AI 自动分析反馈（可能看图 + 看文字）。
+    AI 自动分析反馈（同步调用）。
     产出两个结果：
-      1. ai_analysis — 给用户/管理员看的诊断（分类、严重度、可能原因、建议）
-      2. ai_fix_plan — 给管理员看的修复方案（改哪个文件 + 改什么）
+      1. ai_analysis — 给用户/管理员看的诊断
+      2. ai_fix_plan — 给管理员看的修复方案
+    既可 submit 时异步触发（fire-and-forget），也可查询时同步惰性触发。
     """
-    import asyncio
+    import threading
     try:
         # 抽掉 data:image/xxx;base64, 前缀
         img_clean = ""
@@ -621,10 +622,13 @@ async def submit_feedback(req: FeedbackSubmitRequest, request: Request):
         )
         logger.info("反馈已提交 ip=%s fid=%s has_image=%s", ip, fb["id"], bool(req.image_base64))
 
-        # 异步后台任务：AI 自动分析（不阻塞响应）
-        asyncio.create_task(
-            _run_ai_feedback_analysis(fb["id"], req.content, req.image_base64 or "")
-        )
+        # 后台线程触发 AI 分析（fire-and-forget，Render Free 版休眠也没关系——下次有人查工单时惰性触发）
+        import threading
+        threading.Thread(
+            target=_run_ai_feedback_analysis,
+            args=(fb["id"], req.content, req.image_base64 or ""),
+            daemon=True,
+        ).start()
 
         # 飞书通知（附带 AI 分析状态）
         try:
@@ -649,13 +653,45 @@ async def submit_feedback(req: FeedbackSubmitRequest, request: Request):
 
 @app.post("/api/feedback/mine", tags=["feedback"])
 def my_feedbacks(req: IdentifyRequest, request: Request):
-    """查询当前用户的所有工单（含管理员回复）。"""
+    """查询当前用户的所有工单（含管理员回复）。会触发 AI 惰性分析。"""
     try:
         items = db.list_my_feedbacks(req.fingerprint)
+        # 惰性触发：如果有工单还没 AI 分析，同步跑一下（最多 1 个，避免阻塞）
+        _lazy_analyze_pending(items[:1])
+        items = db.list_my_feedbacks(req.fingerprint)  # 重新查
         return JSONResponse(content={"items": items})
     except Exception as e:
         logger.error("查询反馈失败: %s", e)
         raise HTTPException(status_code=500, detail="查询失败")
+
+
+def _lazy_analyze_pending(items: list):
+    """同步触发 AI 分析（给还没分析的 pending 工单跑一下，最多 1 个）。"""
+    for t in items:
+        if not t.get("ai_analysis") and t.get("status") == "pending":
+            raw = _get_feedback_raw(t["id"])
+            if raw:
+                try:
+                    _run_ai_feedback_analysis(t["id"], raw["content"], raw["image_base64"] or "")
+                except Exception as e:
+                    logger.warning("惰性 AI 分析失败 fid=%s: %s", t["id"], e)
+            return
+
+
+def _get_feedback_raw(fid: str) -> dict | None:
+    """拿到工单原始数据（content, image_base64）。"""
+    import psycopg2
+    from . import db as db_mod
+    try:
+        with db_mod.get_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT content, image_base64 FROM feedbacks WHERE id = %s", (fid,))
+            row = cur.fetchone()
+            if row:
+                return {"content": row[0], "image_base64": row[1] or ""}
+    except Exception:
+        pass
+    return None
 
 
 # ========== 管理员 API ==========
