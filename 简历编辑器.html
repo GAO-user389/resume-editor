@@ -494,6 +494,7 @@
     <button class="btn" onclick="openFeedbackModal()" style="background:#ec4899;color:#fff;font-size:11px;padding:5px 10px;"> 💬 反馈</button>
     <span id="feedbackBadge" onclick="openMyTickets()" style="display:none;font-size:10px;background:#10b981;color:#fff;padding:2px 8px;border-radius:10px;cursor:pointer;margin-right:4px;" title="点击查看回复">📬 有回复</span>
     <span id="quotaDisplay" style="font-size:11px;color:#fff;opacity:0.85;margin-right:4px;">加载中...</span>
+    <button id="upgradeBtn" onclick="showPremiumModal()" style="background:linear-gradient(135deg,#f59e0b,#d97706);color:#fff;border:none;font-size:10px;padding:4px 10px;border-radius:10px;cursor:pointer;margin-right:4px;white-space:nowrap;">⚡ 升级</button>
     <span id="saveStatus" style="font-size:11px;color:#fff;opacity:0.7;display:none;margin-right:4px;"></span>
     <button class="btn btn-ai" onclick="openJD()"> JD匹配分析</button>
     <button class="btn btn-export" onclick="exportPDF()"> 导出PDF</button>
@@ -843,8 +844,7 @@
       </div>
       <div style="margin-top:14px;font-size:13px;color:#374151;line-height:1.8;">
         <strong>使用限制：</strong><br>
-        · 未登录用户：每 IP 每日 10 次，每分钟 2 次<br>
-        · 全站每日总上限 1000 次<br>
+        · 免费用户：每天 3 次 AI 改写（自然日重置）<br>
         · 单次输入不超过 5000 字符
       </div>
       <div style="margin-top:14px;font-size:13px;">
@@ -2407,20 +2407,22 @@
   }
   function updateQuotaDisplay() {
     const el = document.getElementById('quotaDisplay');
+    const upBtn = document.getElementById('upgradeBtn');
     if (!el) return;
+    const isPaid = userState.plan === 'permanent' || (userState.plan === 'monthly' && userState.is_premium);
+    if (upBtn) upBtn.style.display = isPaid ? 'none' : '';
     if (userState.plan === 'permanent') {
       el.textContent = '👑 永久版 · 无限使用';
-      el.style.color = '#059669';
+      el.style.color = '#fbbf24';
     } else if (userState.plan === 'monthly' && userState.is_premium) {
       const exp = userState.expires_at ? userState.expires_at.slice(0, 10) : '';
       el.textContent = `⚡ 30天版 · 到期 ${exp}`;
-      el.style.color = '#059669';
+      el.style.color = '#fbbf24';
     } else {
-      // free 或 monthly 已过期 → 每日配额
       const remain = userState.remaining >= 0 ? userState.remaining : userState.daily_limit;
       const limit = userState.daily_limit || 3;
       el.textContent = `免费剩余 ${remain}/${limit} 次（每日重置）`;
-      el.style.color = remain <= 1 ? '#dc2626' : '#6b7280';
+      el.style.color = remain <= 1 ? '#dc2626' : '#fff';
     }
   }
   identifyDevice();
