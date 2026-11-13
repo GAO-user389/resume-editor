@@ -810,6 +810,62 @@ def admin_delete(feedback_id: str, _: bool = Depends(_require_admin)):
     return JSONResponse(content={"ok": True})
 
 
+@app.get("/api/admin/test-smtp", tags=["admin"])
+def admin_test_smtp(_: bool = Depends(_require_admin)):
+    """调试用：测试 SMTP 连通性，返回详细结果。"""
+    import smtplib, ssl
+    from email.mime.text import MIMEText
+    from email.header import Header
+    from . import config
+
+    results = {
+        "configured": bool(config.EMAIL_USER and config.EMAIL_PASSWORD),
+        "host": config.EMAIL_SMTP_HOST,
+        "port": config.EMAIL_SMTP_PORT,
+        "use_ssl": config.EMAIL_USE_SSL,
+        "user": config.EMAIL_USER[:3] + "***" + config.EMAIL_USER[-8:] if config.EMAIL_USER else "",
+        "password_set": bool(config.EMAIL_PASSWORD),
+        "steps": [],
+    }
+
+    if not results["configured"]:
+        results["error"] = "EMAIL_USER 或 EMAIL_PASSWORD 未配置"
+        return JSONResponse(content=results)
+
+    try:
+        results["steps"].append("1. 尝试连接 SMTP 服务器...")
+        if config.EMAIL_USE_SSL:
+            context = ssl.create_default_context()
+            server = smtplib.SMTP_SSL(config.EMAIL_SMTP_HOST, config.EMAIL_SMTP_PORT, context=context, timeout=15)
+        else:
+            server = smtplib.SMTP(config.EMAIL_SMTP_HOST, config.EMAIL_SMTP_PORT, timeout=15)
+            server.starttls()
+        results["steps"].append("   ✅ SMTP 服务器连接成功")
+
+        results["steps"].append("2. 尝试 LOGIN...")
+        server.login(config.EMAIL_USER, config.EMAIL_PASSWORD)
+        results["steps"].append("   ✅ LOGIN 成功")
+
+        results["steps"].append("3. 尝试发送测试邮件...")
+        msg = MIMEText("这是一封 SMTP 调试邮件。如果你收到了，说明邮件系统配置正确！", "plain", "utf-8")
+        msg["Subject"] = Header("简历编辑器 SMTP 调试邮件", "utf-8")
+        msg["From"] = f"{config.EMAIL_FROM_NAME} <{config.EMAIL_USER}>"
+        msg["To"] = config.EMAIL_USER
+
+        server.sendmail(config.EMAIL_USER, [config.EMAIL_USER], msg.as_string())
+        results["steps"].append("   ✅ 发送成功！去收件箱找一下（可能在垃圾箱）")
+
+        server.quit()
+        results["success"] = True
+    except Exception as e:
+        import traceback
+        results["steps"].append(f"   ❌ 失败: {type(e).__name__}: {e}")
+        results["traceback"] = traceback.format_exc()
+        results["success"] = False
+
+    return JSONResponse(content=results)
+
+
 @app.get("/admin", response_class=HTMLResponse, tags=["admin"])
 def admin_page():
     """管理后台页面。"""
