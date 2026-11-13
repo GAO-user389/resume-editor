@@ -490,6 +490,8 @@
     <button class="btn btn-edit" id="editBtn" onclick="toggleEdit()"> 开启编辑</button>
     <button class="btn" id="addSectionBtn" onclick="openAddSectionModal()" style="background:#059669;color:#fff;display:none;"> 添加板块</button>
     <button class="btn btn-reset" id="undoBtn" onclick="undoEdit()" disabled style="opacity:0.4;cursor:not-allowed;"> 撤销上一步</button>
+    <button class="btn" onclick="clearAllData()" style="background:#9ca3af;color:#fff;font-size:11px;padding:5px 10px;"> 清除数据</button>
+    <span id="quotaDisplay" style="font-size:11px;color:#fff;opacity:0.85;margin-right:4px;">加载中...</span>
     <span id="saveStatus" style="font-size:11px;color:#fff;opacity:0.7;display:none;margin-right:4px;"></span>
     <button class="btn btn-ai" onclick="openJD()"> JD匹配分析</button>
     <button class="btn btn-export" onclick="exportPDF()"> 导出PDF</button>
@@ -1004,7 +1006,39 @@
   </div>
 </div>
 
+<!-- 买断激活弹窗 -->
+<div class="ai-modal" id="premiumModal">
+  <div class="ai-modal-content" style="max-width:520px;">
+    <h3>🚀 解锁完整版</h3>
+    <div style="background:linear-gradient(135deg,#667eea33,#764ba233);padding:18px;border-radius:10px;margin:12px 0;">
+      <div style="font-size:15px;font-weight:600;color:#1f2937;margin-bottom:8px;">买断永久使用权 — ¥19.9</div>
+      <div style="font-size:13px;color:#4b5563;line-height:1.7;">
+        ✓ 无限次 AI 改写<br>
+        ✓ 无限次 JD 截图 OCR 识别<br>
+        ✓ 所有模板和功能永久使用<br>
+        ✓ 一次付费，终身有效
+      </div>
+    </div>
+    <div style="font-size:13px;color:#374151;line-height:1.7;margin:12px 0;">
+      <strong>付款方式：</strong>微信/支付宝扫码付款 ¥19.9，付款后联系客服获取激活码。<br>
+      <strong>客服微信：</strong>请在简历编辑器页面底部查看联系方式
+    </div>
+    <div style="margin:16px 0;">
+      <label style="font-size:13px;color:#374151;font-weight:500;">输入激活码：</label>
+      <input type="text" id="activateCodeInput" placeholder="RESUME-XXXX-XXXX-XXXX" 
+        style="width:100%;padding:10px 12px;border:1px solid #d1d5db;border-radius:6px;font-size:14px;margin-top:6px;letter-spacing:1px;" 
+        oninput="this.value=this.value.toUpperCase()">
+    </div>
+    <div id="activateResult" style="font-size:13px;min-height:20px;margin:8px 0;"></div>
+    <div class="actions" style="margin-top:12px;">
+      <button class="btn btn-reset" onclick="document.getElementById('premiumModal').classList.remove('active')">稍后再说</button>
+      <button class="btn btn-ai" id="activateSubmitBtn" onclick="submitActivateCode()"> 激活</button>
+    </div>
+  </div>
+</div>
+
 <!-- 导出 loading -->
+
 <div class="export-overlay" id="exportOverlay">
   <div class="spinner"></div>
   <div class="tip">正在生成 PDF，请稍候...</div>
@@ -1677,10 +1711,13 @@
       const resp = await fetch('/api/ai/ocr', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ image_base64: base64 }),
+        body: JSON.stringify({ image_base64: base64, fingerprint: DEVICE_FP }),
       });
       const data = await resp.json();
-      if (!resp.ok) throw new Error(data.detail || '识别失败');
+      if (!resp.ok) {
+        if (resp.status === 403) showPremiumModal();
+        throw new Error(data.detail || '识别失败');
+      }
       const existing = document.getElementById('jdText').value;
       document.getElementById('jdText').value = existing ? existing + '\n\n' + data.content : data.content;
       jdFileName.textContent = ' ' + f.name + ' ✓';
@@ -2226,6 +2263,79 @@
   /* ---------- 后端地址（部署时改为同源或实际域名） ---------- */
   const BACKEND_BASE_URL = (location.protocol === 'file:') ? 'http://localhost:8000' : '';
 
+  /* ---------- 设备指纹（Canvas + WebGL + UA + 屏幕） ---------- */
+  function generateFingerprint() {
+    let fp = localStorage.getItem('device_fp');
+    if (fp) return fp;
+    try {
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      ctx.textBaseline = 'top';
+      ctx.font = "14px 'Arial'";
+      ctx.fillText('resume-editor-fp', 2, 2);
+      const canvasData = canvas.toDataURL();
+      const gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
+      let glInfo = '';
+      if (gl) {
+        const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+        glInfo = dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : 'no-webgl';
+      }
+      const raw = [
+        navigator.userAgent,
+        screen.width + 'x' + screen.height,
+        screen.colorDepth,
+        new Date().getTimezoneOffset(),
+        canvasData.length,
+        glInfo,
+        navigator.language,
+        navigator.platform
+      ].join('|');
+      // 简单哈希
+      let hash = 0;
+      for (let i = 0; i < raw.length; i++) {
+        hash = ((hash << 5) - hash + raw.charCodeAt(i)) | 0;
+      }
+      fp = 'fp_' + Math.abs(hash).toString(36) + '_' + raw.length.toString(36);
+      localStorage.setItem('device_fp', fp);
+      return fp;
+    } catch (e) {
+      fp = 'fp_' + Math.random().toString(36).slice(2, 12);
+      localStorage.setItem('device_fp', fp);
+      return fp;
+    }
+  }
+  const DEVICE_FP = generateFingerprint();
+
+  /* ---------- 用户配额状态 ---------- */
+  let userState = { is_premium: false, remaining: 5, free_limit: 5 };
+  async function identifyDevice() {
+    try {
+      const res = await fetch(BACKEND_BASE_URL + '/api/auth/identify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fingerprint: DEVICE_FP }),
+      });
+      if (res.ok) {
+        userState = await res.json();
+        updateQuotaDisplay();
+      }
+    } catch (e) {
+      console.warn('设备识别失败，降级为本地模式');
+    }
+  }
+  function updateQuotaDisplay() {
+    const el = document.getElementById('quotaDisplay');
+    if (!el) return;
+    if (userState.is_premium) {
+      el.textContent = '✓ 已买断 · 无限使用';
+      el.style.color = '#059669';
+    } else {
+      el.textContent = `免费剩余 ${userState.remaining}/${userState.free_limit} 次`;
+      el.style.color = userState.remaining <= 1 ? '#dc2626' : '#6b7280';
+    }
+  }
+  identifyDevice();
+
   /* ---------- LLM 调用（统一走后端 /api/ai/chat） ---------- */
   async function callLLM(prompt, systemPrompt) {
     // 后端持有 API Key，前端不再发送 Key
@@ -2233,17 +2343,25 @@
     const res = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ prompt, system_prompt: systemPrompt || null }),
+      body: JSON.stringify({ prompt, system_prompt: systemPrompt || null, fingerprint: DEVICE_FP }),
     });
     // 读取剩余次数响应头
     const remaining = res.headers.get('X-RateLimit-Remaining');
-    if (remaining !== null) updateRemainingCount(parseInt(remaining) || 0);
+    if (remaining !== null) {
+      userState.remaining = parseInt(remaining) || 0;
+      updateRemainingCount(userState.remaining);
+      updateQuotaDisplay();
+    }
     if (!res.ok) {
       let msg = 'AI 服务开小差了，请稍后再试';
       try {
         const data = await res.json();
         if (data && data.detail) msg = data.detail;
       } catch (e) {}
+      // 403 = 免费次数用完，弹买断窗
+      if (res.status === 403) {
+        showPremiumModal();
+      }
       const err = new Error(msg);
       err.status = res.status;
       throw err;
@@ -2306,6 +2424,64 @@
     document.getElementById('consentCancelBtn').onclick = () => {
       document.getElementById('consentModal').classList.remove('active');
     };
+  }
+
+  /* ---------- 买断激活弹窗 ---------- */
+  function showPremiumModal() {
+    document.getElementById('premiumModal').classList.add('active');
+    document.getElementById('activateCodeInput').value = '';
+    document.getElementById('activateResult').textContent = '';
+  }
+  async function submitActivateCode() {
+    const code = document.getElementById('activateCodeInput').value.trim();
+    const resultEl = document.getElementById('activateResult');
+    const btn = document.getElementById('activateSubmitBtn');
+    if (!code) {
+      resultEl.textContent = '请输入激活码';
+      resultEl.style.color = '#dc2626';
+      return;
+    }
+    btn.disabled = true;
+    btn.textContent = '验证中...';
+    try {
+      const res = await fetch(BACKEND_BASE_URL + '/api/auth/activate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fingerprint: DEVICE_FP, code }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        resultEl.textContent = '✓ ' + (data.message || '激活成功');
+        resultEl.style.color = '#059669';
+        userState.is_premium = true;
+        updateQuotaDisplay();
+        setTimeout(() => {
+          document.getElementById('premiumModal').classList.remove('active');
+        }, 1500);
+      } else {
+        resultEl.textContent = '✗ ' + (data.message || '激活码无效');
+        resultEl.style.color = '#dc2626';
+      }
+    } catch (e) {
+      resultEl.textContent = '✗ 网络异常，请稍后再试';
+      resultEl.style.color = '#dc2626';
+    } finally {
+      btn.disabled = false;
+      btn.textContent = ' 激活';
+    }
+  }
+
+  /* ---------- 清除我的数据 ---------- */
+  function clearAllData() {
+    if (!confirm('确定要清除所有本地数据吗？\n（包括简历内容、编辑历史、设备指纹等，此操作不可恢复）')) return;
+    try {
+      localStorage.clear();
+      sessionStorage.clear();
+      alert('已清除所有本地数据，页面即将刷新');
+      location.reload();
+    } catch (e) {
+      alert('清除失败：' + e.message);
+    }
   }
 
   /* ---------- 用 LLM 解析 JD 结构化 ---------- */

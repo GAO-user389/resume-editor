@@ -27,6 +27,7 @@ from .feishu_client import (
     FeishuError, parse_bitable_url, list_tables, list_records, extract_company_position,
     _get_tenant_access_token,
 )
+from . import db
 
 # ========== 日志配置：只记元信息，绝不打印简历内容 ==========
 logging.basicConfig(
@@ -51,6 +52,7 @@ app.add_middleware(
 class AIChatRequest(BaseModel):
     prompt: str = Field(..., min_length=1)
     system_prompt: Optional[str] = None
+    fingerprint: Optional[str] = None  # 设备指纹，用于配额检查
 
     class Config:
         # 禁止打印请求体到日志
@@ -64,6 +66,7 @@ class AIChatResponse(BaseModel):
 class OCRRequest(BaseModel):
     """截图 OCR 请求：前端把图片转 base64 后上传。"""
     image_base64: str = Field(..., min_length=1)
+    fingerprint: Optional[str] = None  # 设备指纹，用于配额检查
 
 
 class FeishuBitableRequest(BaseModel):
@@ -78,6 +81,17 @@ class FeishuTestRequest(BaseModel):
     """飞书连接测试请求（仅验证凭证是否有效，不需要表格）。"""
     app_id: Optional[str] = None
     app_secret: Optional[str] = None
+
+
+class IdentifyRequest(BaseModel):
+    """设备指纹识别请求。"""
+    fingerprint: str = Field(..., min_length=10)
+
+
+class ActivateRequest(BaseModel):
+    """激活码核销请求。"""
+    fingerprint: str = Field(..., min_length=10)
+    code: str = Field(..., min_length=5)
 
 
 # ========== 工具函数 ==========
@@ -152,6 +166,7 @@ def ai_chat(req: AIChatRequest, request: Request):
     """
     AI 改写统一入口。
     - 输入长度校验 ≤ 5000 字符
+    - 配额检查（免费次数 / 买断用户）
     - 调用大模型并加 NOT_A_RESUME 护栏
     - 返回剩余次数响应头
     """
@@ -160,6 +175,14 @@ def ai_chat(req: AIChatRequest, request: Request):
         raise HTTPException(
             status_code=413,
             detail=f"输入内容过长（{total_len} 字符），请精简至 {config.MAX_INPUT_LENGTH} 字符以内",
+        )
+
+    # 配额检查
+    quota = check_quota(req.fingerprint or "")
+    if not quota["ok"]:
+        raise HTTPException(
+            status_code=403,
+            detail=f"今日免费次数已用完（{config.FREE_CALLS_LIMIT}次），请购买买断后继续使用",
         )
 
     # 调用 AI
@@ -183,7 +206,14 @@ def ai_chat(req: AIChatRequest, request: Request):
     if content.strip() == config.NOT_A_RESUME_FLAG:
         raise HTTPException(status_code=422, detail="请粘贴简历内容后再试")
 
-    remaining = getattr(request.state, "remaining", 0)
+    # AI 调用成功，递增免费次数（仅非买断用户）
+    if not quota["is_premium"] and quota["user_id"]:
+        try:
+            db.increment_free_calls(quota["user_id"])
+        except Exception as e:
+            logger.warning("免费次数递增失败: %s", e)
+
+    remaining = quota["remaining"] if quota["is_premium"] else max(0, quota["remaining"] - 1)
     return JSONResponse(
         content={"content": content},
         headers={"X-RateLimit-Remaining": str(remaining)},
@@ -196,11 +226,19 @@ def ai_ocr(req: OCRRequest, request: Request):
     JD 截图 OCR 识别。
     - 接收 base64 图片，调用智谱 GLM-4V 提取文字
     - 图片仅在内存中转，不写盘
-    - 受统一限流约束
+    - 受统一限流约束 + 配额检查
     """
     # 限制图片大小：base64 约 5MB（约 3.75MB 原图）
     if len(req.image_base64) > 5 * 1024 * 1024:
         raise HTTPException(status_code=413, detail="图片过大，请压缩后再上传")
+
+    # 配额检查
+    quota = check_quota(req.fingerprint or "")
+    if not quota["ok"]:
+        raise HTTPException(
+            status_code=403,
+            detail=f"今日免费次数已用完（{config.FREE_CALLS_LIMIT}次），请购买买断后继续使用",
+        )
 
     try:
         text = call_vision_ocr(req.image_base64)
@@ -215,7 +253,14 @@ def ai_ocr(req: OCRRequest, request: Request):
         logger.error("OCR 未知错误 ip=%s detail=%s", get_client_ip(request), e.detail)
         raise HTTPException(status_code=e.status_code, detail=e.message)
 
-    remaining = getattr(request.state, "remaining", 0)
+    # OCR 成功，递增免费次数
+    if not quota["is_premium"] and quota["user_id"]:
+        try:
+            db.increment_free_calls(quota["user_id"])
+        except Exception as e:
+            logger.warning("免费次数递增失败: %s", e)
+
+    remaining = quota["remaining"] if quota["is_premium"] else max(0, quota["remaining"] - 1)
     return JSONResponse(
         content={"content": text},
         headers={"X-RateLimit-Remaining": str(remaining)},
@@ -276,6 +321,72 @@ def feishu_test_connection(req: FeishuTestRequest, request: Request):
     except FeishuError as e:
         logger.warning("飞书连接测试失败 ip=%s msg=%s", ip, e.message)
         raise HTTPException(status_code=e.code, detail=e.message)
+
+
+# ========== 商业化：设备指纹 + 免费次数 + 激活码 ==========
+def check_quota(fingerprint: str) -> dict:
+    """
+    检查用户配额。
+    返回 {ok: bool, remaining: int, is_premium: bool, user_id: str}
+    remaining: 剩余免费次数（-1 表示无限，is_premium=true）
+    """
+    try:
+        user = db.get_or_create_user(fingerprint)
+        is_premium = user["is_premium"]
+        if is_premium:
+            return {"ok": True, "remaining": -1, "is_premium": True, "user_id": user["id"]}
+        remaining = db.get_free_calls_remaining(user["id"], config.FREE_CALLS_LIMIT)
+        return {"ok": remaining > 0, "remaining": remaining, "is_premium": False, "user_id": user["id"]}
+    except Exception as e:
+        # 数据库不可用时，降级为放行（不影响现有用户）
+        logger.warning("数据库不可用，降级放行: %s", e)
+        return {"ok": True, "remaining": -1, "is_premium": False, "user_id": ""}
+
+
+@app.post("/api/auth/identify", tags=["auth"])
+def identify_device(req: IdentifyRequest, request: Request):
+    """
+    设备指纹识别：返回用户状态（免费次数、是否买断）。
+    前端每次加载页面时调用。
+    """
+    ip = get_client_ip(request)
+    try:
+        user = db.get_or_create_user(req.fingerprint)
+        is_premium = user["is_premium"]
+        remaining = -1 if is_premium else db.get_free_calls_remaining(user["id"], config.FREE_CALLS_LIMIT)
+        logger.info("设备识别 ip=%s premium=%s", ip, is_premium)
+        return JSONResponse(content={
+            "is_premium": is_premium,
+            "remaining": remaining,
+            "free_limit": config.FREE_CALLS_LIMIT,
+        })
+    except Exception as e:
+        logger.warning("设备识别失败（降级放行）: %s", e)
+        return JSONResponse(content={
+            "is_premium": False,
+            "remaining": config.FREE_CALLS_LIMIT,
+            "free_limit": config.FREE_CALLS_LIMIT,
+        })
+
+
+@app.post("/api/auth/activate", tags=["auth"])
+def activate_code(req: ActivateRequest, request: Request):
+    """
+    激活码核销：验证激活码并升级为买断用户。
+    """
+    ip = get_client_ip(request)
+    try:
+        user = db.get_or_create_user(req.fingerprint)
+        if user["is_premium"]:
+            return JSONResponse(content={"ok": True, "message": "您已是买断用户，无需重复激活", "is_premium": True})
+        success = db.verify_and_use_code(req.code, user["id"])
+        if success:
+            logger.info("激活码核销成功 ip=%s", ip)
+            return JSONResponse(content={"ok": True, "message": "激活成功，已升级为买断用户", "is_premium": True})
+        return JSONResponse(status_code=400, content={"ok": False, "message": "激活码无效或已被使用"})
+    except Exception as e:
+        logger.warning("激活码核销失败: %s", e)
+        raise HTTPException(status_code=500, detail="激活服务异常，请稍后再试")
 
 
 # ========== 统一异常处理 ==========

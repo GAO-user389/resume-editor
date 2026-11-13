@@ -16,6 +16,10 @@ avatar.jpg
 avatar.png
 .screenshots/
 
+# 临时脚本
+init_db.py
+clean_test.py
+
 # 系统文件
 .DS_Store
 Thumbs.db

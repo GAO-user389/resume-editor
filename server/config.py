@@ -51,3 +51,7 @@ AI_VISION_MODEL = os.getenv("AI_VISION_MODEL", "glm-4v")
 
 # ========== NOT_A_RESUME 护栏标识 ==========
 NOT_A_RESUME_FLAG = "NOT_A_RESUME"
+
+# ========== 商业化配置 ==========
+FREE_CALLS_LIMIT = int(os.getenv("FREE_CALLS_LIMIT", "5"))  # 免费 AI 调用次数
+PREMIUM_PRICE = os.getenv("PREMIUM_PRICE", "19.9")          # 买断价格
