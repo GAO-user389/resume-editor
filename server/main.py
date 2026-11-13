@@ -751,11 +751,34 @@ def admin_daily_report(date: Optional[str] = None,
 @app.post("/api/admin/feedbacks/{feedback_id}/reply", tags=["admin"])
 def admin_reply(feedback_id: str, req: AdminReplyRequest,
                 _: bool = Depends(_require_admin)):
-    """管理员回复工单。"""
+    """管理员回复工单。回复后自动发邮件给用户（如果用户留了邮箱）。"""
+    # 先拿到工单原始数据（content, contact, ai_analysis）用于发邮件
+    raw = _get_feedback_raw(feedback_id)
+    if not raw:
+        raise HTTPException(status_code=404, detail="工单不存在")
+
     ok = db.reply_feedback(feedback_id, req.reply.strip())
     if not ok:
         raise HTTPException(status_code=404, detail="工单不存在")
-    return JSONResponse(content={"ok": True})
+
+    # 尝试发邮件通知用户
+    contact = raw.get("contact") or ""
+    if contact and "@" in contact:
+        try:
+            from server.email_client import notify_feedback_reply
+            notify_feedback_reply(
+                to_email=contact,
+                user_content=raw.get("content", ""),
+                admin_reply=req.reply.strip(),
+                ai_analysis=raw.get("ai_analysis") or "",
+            )
+            logger.info("已发邮件通知用户 reply fid=%s to=%s", feedback_id, contact)
+        except Exception as e:
+            logger.warning("邮件发送失败不影响工单回复: %s", e)
+    else:
+        logger.info("用户未留有效邮箱，跳过邮件通知 fid=%s contact=%s", feedback_id, contact)
+
+    return JSONResponse(content={"ok": True, "email_sent": bool(contact and "@" in contact)})
 
 
 @app.delete("/api/admin/feedbacks/{feedback_id}", tags=["admin"])

@@ -59,3 +59,12 @@ PREMIUM_PRICE = os.getenv("PREMIUM_PRICE", "19.9")          # 买断价格
 # ========== AI 客服 / 工单系统 ==========
 FEISHU_WEBHOOK_URL = os.getenv("FEISHU_WEBHOOK_URL", "")    # 飞书群机器人 webhook（用户提交反馈时推送）
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "admin123")    # 管理后台密码（务必改！）
+
+# ========== 邮件通知（管理员回复工单时自动发邮件给用户）==========
+# QQ 邮箱配置最方便，其他邮箱类似
+EMAIL_SMTP_HOST = os.getenv("EMAIL_SMTP_HOST", "smtp.qq.com")
+EMAIL_SMTP_PORT = int(os.getenv("EMAIL_SMTP_PORT", "465"))
+EMAIL_USE_SSL = os.getenv("EMAIL_USE_SSL", "true").lower() == "true"
+EMAIL_USER = os.getenv("EMAIL_USER", "")                    # 发件邮箱（如 123456@qq.com）
+EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD", "")            # 授权码（QQ 邮箱设置里生成，不是登录密码！）
+EMAIL_FROM_NAME = os.getenv("EMAIL_FROM_NAME", "简历编辑器客服")

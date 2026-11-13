@@ -1066,8 +1066,8 @@
       </div>
     </div>
     <div style="margin-bottom:12px;">
-      <label style="font-size:13px;color:#374151;font-weight:500;">联系方式（选填，方便我们主动联系你）</label>
-      <input type="text" id="feedbackContact" placeholder="微信号 / 邮箱 / 手机号"
+      <label style="font-size:13px;color:#374151;font-weight:500;">📧 联系邮箱 <span style="color:#dc2626;">*</span><span style="font-weight:400;color:#6b7280;margin-left:6px;">（我们回复后会发邮件通知你）</span></label>
+      <input type="email" id="feedbackContact" placeholder="your@email.com"
         style="width:100%;padding:10px 12px;border:1px solid #d1d5db;border-radius:6px;font-size:14px;margin-top:6px;">
     </div>
     <div id="feedbackResult" style="font-size:13px;min-height:20px;margin:4px 0;"></div>
@@ -2589,6 +2589,11 @@
     const resultEl = document.getElementById('feedbackResult');
     if (!content) {
       resultEl.textContent = '请填写反馈内容';
+      resultEl.style.color = '#dc2626';
+      return;
+    }
+    if (!contact || !contact.includes('@') || !contact.includes('.')) {
+      resultEl.textContent = '请填写有效的邮箱地址（回复后会发邮件通知你）';
       resultEl.style.color = '#dc2626';
       return;
     }
