@@ -679,16 +679,24 @@ def _lazy_analyze_pending(items: list):
 
 
 def _get_feedback_raw(fid: str) -> dict | None:
-    """拿到工单原始数据（content, image_base64）。"""
+    """拿到工单原始数据（content, contact, image_base64, ai_analysis）。"""
     import psycopg2
     from . import db as db_mod
     try:
         with db_mod.get_conn() as conn:
             cur = conn.cursor()
-            cur.execute("SELECT content, image_base64 FROM feedbacks WHERE id = %s", (fid,))
+            cur.execute(
+                "SELECT content, contact, image_base64, ai_analysis FROM feedbacks WHERE id = %s",
+                (fid,)
+            )
             row = cur.fetchone()
             if row:
-                return {"content": row[0], "image_base64": row[1] or ""}
+                return {
+                    "content": row[0] or "",
+                    "contact": row[1] or "",
+                    "image_base64": row[2] or "",
+                    "ai_analysis": row[3] or "",
+                }
     except Exception:
         pass
     return None
@@ -763,22 +771,23 @@ def admin_reply(feedback_id: str, req: AdminReplyRequest,
 
     # 尝试发邮件通知用户
     contact = raw.get("contact") or ""
+    email_ok = False
     if contact and "@" in contact:
         try:
             from server.email_client import notify_feedback_reply
-            notify_feedback_reply(
+            email_ok = notify_feedback_reply(
                 to_email=contact,
                 user_content=raw.get("content", ""),
                 admin_reply=req.reply.strip(),
                 ai_analysis=raw.get("ai_analysis") or "",
             )
-            logger.info("已发邮件通知用户 reply fid=%s to=%s", feedback_id, contact)
+            logger.info("邮件发送 fid=%s to=%s ok=%s", feedback_id, contact, email_ok)
         except Exception as e:
-            logger.warning("邮件发送失败不影响工单回复: %s", e)
+            logger.warning("邮件发送异常 fid=%s: %s", feedback_id, e)
     else:
-        logger.info("用户未留有效邮箱，跳过邮件通知 fid=%s contact=%s", feedback_id, contact)
+        logger.info("用户未留有效邮箱，跳过邮件通知 fid=%s", feedback_id)
 
-    return JSONResponse(content={"ok": True, "email_sent": bool(contact and "@" in contact)})
+    return JSONResponse(content={"ok": True, "email_sent": email_ok})
 
 
 @app.delete("/api/admin/feedbacks/{feedback_id}", tags=["admin"])
