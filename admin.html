@@ -71,7 +71,22 @@ body { font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei",
 <div class="app" id="app">
   <div class="topbar">
     <h1>📮 用户反馈工单 <span id="countBadge" style="font-size:13px;color:#6b7280;font-weight:normal;"></span></h1>
-    <button class="logout" onclick="doLogout()">退出登录</button>
+    <div>
+      <button class="logout" onclick="refreshDaily()">🔄 刷新看板</button>
+      <button class="logout" onclick="doLogout()">退出登录</button>
+    </div>
+  </div>
+
+  <!-- 每日统计看板 -->
+  <div id="dailyBoard" style="background:linear-gradient(135deg,#667eea14,#764ba214);border:1px solid #e5e7eb;border-radius:10px;padding:16px 20px;margin-bottom:16px;display:none;">
+    <div style="font-size:14px;font-weight:600;color:#1f2937;margin-bottom:12px;">📊 今日概览 <span id="dailyDate" style="font-size:12px;color:#6b7280;font-weight:normal;"></span></div>
+    <div style="display:flex;gap:16px;flex-wrap:wrap;">
+      <div style="text-align:center;min-width:70px;"><div id="dTotal" style="font-size:22px;font-weight:700;color:#111827;">-</div><div style="font-size:11px;color:#6b7280;">今日总量</div></div>
+      <div style="text-align:center;min-width:70px;"><div id="dPending" style="font-size:22px;font-weight:700;color:#d97706;">-</div><div style="font-size:11px;color:#6b7280;">待回复</div></div>
+      <div style="text-align:center;min-width:70px;"><div id="dReplied" style="font-size:22px;font-weight:700;color:#059669;">-</div><div style="font-size:11px;color:#6b7280;">已回复</div></div>
+      <div style="text-align:center;min-width:70px;"><div id="dAI" style="font-size:22px;font-weight:700;color:#2563eb;">-</div><div style="font-size:11px;color:#6b7280;">🤖 AI分析</div></div>
+      <div style="text-align:center;min-width:70px;"><div id="dImg" style="font-size:22px;font-weight:700;color:#7c3aed;">-</div><div style="font-size:11px;color:#6b7280;">📷 带截图</div></div>
+    </div>
   </div>
 
   <div class="filters">
@@ -89,13 +104,29 @@ let currentFilter = '';
 let tickets = [];
 
 // ===== 登录检查 =====
+// ===== 每日统计看板 =====
+async function refreshDaily() {
+  try {
+    const r = await fetch('/api/admin/daily-report', { credentials: 'include' });
+    if (!r.ok) return;
+    const d = await r.json();
+    document.getElementById('dailyBoard').style.display = 'block';
+    document.getElementById('dailyDate').textContent = '（' + d.date + '）';
+    document.getElementById('dTotal').textContent = d.total;
+    document.getElementById('dPending').textContent = d.pending;
+    document.getElementById('dReplied').textContent = d.replied;
+    document.getElementById('dAI').textContent = d.ai_analyzed;
+    document.getElementById('dImg').textContent = d.with_image;
+  } catch {}
+}
+
 async function checkLogin() {
   try {
     const r = await fetch('/api/admin/feedbacks', { credentials: 'include' });
     if (r.ok) {
       document.getElementById('loginWrap').style.display = 'none';
       document.getElementById('app').classList.add('active');
-      await loadTickets();
+      await Promise.all([loadTickets(), refreshDaily()]);
     } else {
       document.getElementById('loginWrap').style.display = 'flex';
     }
@@ -167,18 +198,34 @@ function render() {
   }
   empty.style.display = 'none';
 
-  list.innerHTML = tickets.map(t => `
+  list.innerHTML = tickets.map(t => {
+    let badge = '';
+    if (t.has_image) badge += '📷';
+    if (t.ai_analysis) badge += ' 🤖';
+    let card = `
     <div class="ticket">
       <div class="ticket-head">
         <div>
           <span class="ticket-status ${t.status}">${t.status === 'pending' ? '⏳ 待回复' : '✅ 已回复'}</span>
-          <span style="margin-left:8px" class="ticket-meta">#${t.id.slice(0, 8)}</span>
+          <span style="margin-left:8px" class="ticket-meta">#${t.id.slice(0, 8)} ${badge}</span>
         </div>
         <span class="ticket-meta">${new Date(t.created_at).toLocaleString('zh-CN')}</span>
       </div>
-      <div class="ticket-content">${escapeHtml(t.content)}</div>
-      ${t.contact ? `<div class="ticket-contact">📞 联系方式：<span>${escapeHtml(t.contact)}</span></div>` : ''}
-      ${t.admin_reply ? `<div class="ticket-reply">💬 我的回复：\n${escapeHtml(t.admin_reply)}</div>` : ''}
+      <div class="ticket-content">${escapeHtml(t.content)}</div>`;
+    if (t.has_image && t.image_base64) {
+      card += `<div style="margin:8px 0;"><img src="${t.image_base64}" style="max-width:200px;max-height:200px;border-radius:6px;border:1px solid #e5e7eb;cursor:pointer;" onclick="window.open('${t.image_base64}','_blank')"></div>`;
+    }
+    if (t.ai_analysis) {
+      card += `<div style="background:#eff6ff;border-left:3px solid #3b82f6;padding:8px 12px;margin:8px 0;border-radius:0 6px 6px 0;font-size:13px;color:#1e40af;white-space:pre-wrap;">
+        <div style="font-size:11px;color:#1d4ed8;font-weight:600;margin-bottom:4px;">🤖 AI 自动分析 ${t.ai_analyzed_at ? '· ' + new Date(t.ai_analyzed_at).toLocaleString('zh-CN') : ''}</div>
+        ${escapeHtml(t.ai_analysis)}
+      </div>`;
+    } else {
+      card += `<div style="font-size:11px;color:#9ca3af;margin:4px 0;">🤖 AI 分析中...</div>`;
+    }
+    if (t.contact) card += `<div class="ticket-contact">📞 联系方式：<span>${escapeHtml(t.contact)}</span></div>`;
+    if (t.admin_reply) card += `<div class="ticket-reply">💬 我的回复：\n${escapeHtml(t.admin_reply)}</div>`;
+    card += `
       <div style="margin-top:10px;">
         <span class="ticket-toggle" onclick="toggleDetail('${t.id}')">${t.admin_reply ? '重新回复 / 展开' : '展开回复'} ▾</span>
       </div>
@@ -190,8 +237,9 @@ function render() {
           <button class="btn-reply" onclick="submitReply('${t.id}')">${t.admin_reply ? '更新回复' : '发送回复'}</button>
         </div>
       </div>
-    </div>
-  `).join('');
+    </div>`;
+    return card;
+  }).join('');
 }
 
 function escapeHtml(s) {

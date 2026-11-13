@@ -175,71 +175,131 @@ def is_db_available() -> bool:
 
 
 # ========== 反馈工单 ==========
-def create_feedback(fingerprint: str, content: str, contact: str = "") -> dict:
+def create_feedback(fingerprint: str, content: str, contact: str = "", image_base64: str = "") -> dict:
     """用户提交反馈，返回工单信息。"""
     with get_conn() as conn:
         cur = conn.cursor()
         cur.execute(
-            "INSERT INTO feedbacks (fingerprint, content, contact, status) "
-            "VALUES (%s, %s, %s, 'pending') RETURNING id, created_at",
-            (fingerprint, content, contact),
+            "INSERT INTO feedbacks (fingerprint, content, contact, status, image_base64) "
+            "VALUES (%s, %s, %s, 'pending', %s) RETURNING id, created_at",
+            (fingerprint, content, contact, image_base64),
         )
         row = cur.fetchone()
         return {"id": str(row[0]), "created_at": row[1].isoformat()}
 
 
+def _row_to_feedback(r: tuple, include_image: bool = True) -> dict:
+    """把 db row 转成 dict（SELECT 顺序: id, content, contact, status, admin_reply, image_base64, ai_analysis, created_at, replied_at）。"""
+    d = {
+        "id": str(r[0]),
+        "content": r[1],
+        "contact": r[2] or "",
+        "status": r[3],
+        "admin_reply": r[4] or "",
+        "image_base64": (r[5] or "") if include_image else "",
+        "has_image": bool(r[5]),
+        "ai_analysis": r[6] or "",
+        "ai_analyzed_at": r[7].isoformat() if r[7] else "",
+        "created_at": r[8].isoformat() if r[8] else "",
+        "replied_at": r[9].isoformat() if r[9] else "",
+    }
+    return d
+
+
 def list_my_feedbacks(fingerprint: str) -> list:
-    """查询当前用户的所有工单（含管理员回复）。"""
+    """查询当前用户的所有工单（含截图、AI 分析、管理员回复）。"""
     with get_conn() as conn:
         cur = conn.cursor()
         cur.execute(
-            "SELECT id, content, contact, status, admin_reply, created_at, replied_at "
+            "SELECT id, content, contact, status, admin_reply, image_base64, "
+            "ai_analysis, ai_analyzed_at, created_at, replied_at "
             "FROM feedbacks WHERE fingerprint = %s ORDER BY created_at DESC",
             (fingerprint,),
         )
-        return [
-            {
-                "id": str(r[0]),
-                "content": r[1],
-                "contact": r[2] or "",
-                "status": r[3],
-                "admin_reply": r[4] or "",
-                "created_at": r[5].isoformat() if r[5] else "",
-                "replied_at": r[6].isoformat() if r[6] else "",
-            }
-            for r in cur.fetchall()
-        ]
+        return [_row_to_feedback(r) for r in cur.fetchall()]
 
 
 def list_all_feedbacks(status: str = None, limit: int = 100) -> list:
     """管理员：列出所有工单。status 可选过滤。"""
     with get_conn() as conn:
         cur = conn.cursor()
+        sql = (
+            "SELECT id, fingerprint, content, contact, status, admin_reply, image_base64, "
+            "ai_analysis, ai_analyzed_at, created_at, replied_at "
+            "FROM feedbacks"
+        )
         if status:
-            cur.execute(
-                "SELECT id, fingerprint, content, contact, status, admin_reply, created_at, replied_at "
-                "FROM feedbacks WHERE status = %s ORDER BY created_at DESC LIMIT %s",
-                (status, limit),
-            )
+            sql += " WHERE status = %s"
+            cur.execute(sql + " ORDER BY created_at DESC LIMIT %s", (status, limit))
         else:
-            cur.execute(
-                "SELECT id, fingerprint, content, contact, status, admin_reply, created_at, replied_at "
-                "FROM feedbacks ORDER BY created_at DESC LIMIT %s",
-                (limit,),
-            )
-        return [
-            {
+            cur.execute(sql + " ORDER BY created_at DESC LIMIT %s", (limit,))
+        results = []
+        for r in cur.fetchall():
+            d = _row_to_feedback(r, include_image=True)
+            d["fingerprint"] = (r[1] or "")[:12] + "..."  # 脱敏指纹
+            results.append(d)
+        return results
+
+
+def save_ai_analysis(feedback_id: str, analysis: str) -> bool:
+    """保存 AI 自动分析结果。"""
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE feedbacks SET ai_analysis = %s, ai_analyzed_at = NOW() WHERE id = %s RETURNING id",
+            (analysis, feedback_id),
+        )
+        return cur.fetchone() is not None
+
+
+def get_daily_report(date_str: str = None) -> dict:
+    """
+    获取每日统计报告。date_str 格式 YYYY-MM-DD，默认今天。
+    返回总数、按状态分组、AI 已分析数、热门问题关键词（前5个 content 前50字摘要）。
+    """
+    from datetime import date, datetime
+    target = datetime.strptime(date_str, "%Y-%m-%d").date() if date_str else date.today()
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT COUNT(*), "
+            "COUNT(*) FILTER (WHERE status='pending'), "
+            "COUNT(*) FILTER (WHERE status='replied'), "
+            "COUNT(*) FILTER (WHERE ai_analysis != ''), "
+            "COUNT(*) FILTER (WHERE image_base64 != '') "
+            "FROM feedbacks WHERE DATE(created_at AT TIME ZONE 'Asia/Shanghai') = %s",
+            (target,),
+        )
+        row = cur.fetchone()
+        total, pending, replied, analyzed, with_image = (row[0], row[1], row[2], row[3], row[4])
+
+        # 今日工单列表（摘要）
+        cur.execute(
+            "SELECT id, content, status, ai_analysis, admin_reply, created_at "
+            "FROM feedbacks WHERE DATE(created_at AT TIME ZONE 'Asia/Shanghai') = %s "
+            "ORDER BY created_at DESC LIMIT 50",
+            (target,),
+        )
+        items = []
+        for r in cur.fetchall():
+            items.append({
                 "id": str(r[0]),
-                "fingerprint": r[1][:12] + "..." if r[1] else "",
-                "content": r[2],
-                "contact": r[3] or "",
-                "status": r[4],
-                "admin_reply": r[5] or "",
-                "created_at": r[6].isoformat() if r[6] else "",
-                "replied_at": r[7].isoformat() if r[7] else "",
-            }
-            for r in cur.fetchall()
-        ]
+                "content_preview": (r[1] or "")[:80],
+                "status": r[2],
+                "has_ai": bool(r[3]),
+                "has_reply": bool(r[4]),
+                "created_at": r[5].isoformat() if r[5] else "",
+            })
+
+        return {
+            "date": target.isoformat(),
+            "total": total,
+            "pending": pending,
+            "replied": replied,
+            "ai_analyzed": analyzed,
+            "with_image": with_image,
+            "items": items,
+        }
 
 
 def reply_feedback(feedback_id: str, reply: str) -> bool:

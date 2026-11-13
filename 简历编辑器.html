@@ -1054,6 +1054,18 @@
         style="width:100%;min-height:120px;padding:10px;border:1px solid #d1d5db;border-radius:6px;font-size:14px;margin-top:6px;resize:vertical;"></textarea>
     </div>
     <div style="margin-bottom:12px;">
+      <label style="font-size:13px;color:#374151;font-weight:500;">📷 上传截图（选填，AI 会帮你看图分析）</label>
+      <div style="display:flex;gap:10px;align-items:center;margin-top:6px;">
+        <input type="file" id="feedbackImage" accept="image/*" onchange="onFeedbackImage(this)"
+          style="font-size:12px;">
+        <span id="feedbackImageStatus" style="font-size:11px;color:#6b7280;"></span>
+      </div>
+      <div id="feedbackImagePreview" style="margin-top:8px;display:none;">
+        <img id="feedbackImgThumb" style="max-width:140px;max-height:140px;border-radius:6px;border:1px solid #e5e7eb;">
+        <span onclick="clearFeedbackImage()" style="font-size:11px;color:#dc2626;cursor:pointer;margin-left:8px;">🗑 移除</span>
+      </div>
+    </div>
+    <div style="margin-bottom:12px;">
       <label style="font-size:13px;color:#374151;font-weight:500;">联系方式（选填，方便我们主动联系你）</label>
       <input type="text" id="feedbackContact" placeholder="微信号 / 邮箱 / 手机号"
         style="width:100%;padding:10px 12px;border:1px solid #d1d5db;border-radius:6px;font-size:14px;margin-top:6px;">
@@ -2529,6 +2541,42 @@
   }
 
   /* ---------- AI 客服 / 反馈工单 ---------- */
+  let FEEDBACK_IMG_BASE64 = "";  // 当前选中的截图（压缩后）
+
+  // 图片上传 + 压缩到 ~800px 宽 + JPEG quality 0.85
+  function onFeedbackImage(input) {
+    const file = input.files && input.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    document.getElementById('feedbackImageStatus').textContent = '读取中...';
+    reader.onload = e => {
+      const img = new Image();
+      img.onload = () => {
+        const maxW = 800;
+        const scale = Math.min(1, maxW / img.width);
+        const w = Math.round(img.width * scale);
+        const h = Math.round(img.height * scale);
+        const canvas = document.createElement('canvas');
+        canvas.width = w; canvas.height = h;
+        canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+        FEEDBACK_IMG_BASE64 = canvas.toDataURL('image/jpeg', 0.85);
+        document.getElementById('feedbackImgThumb').src = FEEDBACK_IMG_BASE64;
+        document.getElementById('feedbackImagePreview').style.display = 'block';
+        const sizeKB = Math.round(FEEDBACK_IMG_BASE64.length * 3 / 4 / 1024);
+        document.getElementById('feedbackImageStatus').textContent = `${file.name} → 压缩后 ${sizeKB}KB`;
+      };
+      img.onerror = () => alert('图片加载失败');
+      img.src = e.target.result;
+    };
+    reader.readAsDataURL(file);
+  }
+  function clearFeedbackImage() {
+    FEEDBACK_IMG_BASE64 = "";
+    document.getElementById('feedbackImage').value = '';
+    document.getElementById('feedbackImagePreview').style.display = 'none';
+    document.getElementById('feedbackImageStatus').textContent = '';
+  }
+
   function openFeedbackModal() {
     document.getElementById('feedbackModal').classList.add('active');
     document.getElementById('feedbackResult').textContent = '';
@@ -2555,15 +2603,20 @@
       const resp = await fetch('/api/feedback/submit', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fingerprint: window.DEVICE_FP, content, contact }),
+        body: JSON.stringify({
+          fingerprint: window.DEVICE_FP,
+          content, contact,
+          image_base64: FEEDBACK_IMG_BASE64 || "",
+        }),
       });
       const data = await resp.json();
       if (data.ok) {
-        resultEl.textContent = '✓ 提交成功！我们会尽快处理，你可以点「📬 查看我的工单」看回复';
+        resultEl.textContent = '✓ ' + (data.message || '提交成功！');
         resultEl.style.color = '#059669';
         document.getElementById('feedbackContent').value = '';
         document.getElementById('feedbackContact').value = '';
-        checkMyTickets();  // 刷新角标
+        clearFeedbackImage();
+        checkMyTickets();
       } else {
         resultEl.textContent = '提交失败：' + (data.detail || '未知错误');
         resultEl.style.color = '#dc2626';
@@ -2591,22 +2644,38 @@
         listEl.innerHTML = '<div style="text-align:center;color:#9ca3af;padding:30px;">暂无工单</div>';
         return;
       }
-      listEl.innerHTML = items.map(t => `
+      listEl.innerHTML = items.map(t => {
+        let html = `
         <div style="border:1px solid #e5e7eb;border-radius:8px;padding:12px 14px;margin-bottom:10px;background:#fafafa;">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
             <span style="font-size:11px;color:#6b7280;">#${t.id.slice(0,8)} · ${formatTime(t.created_at)}</span>
             <span style="font-size:11px;padding:2px 8px;border-radius:10px;${t.status==='replied'?'background:#d1fae5;color:#065f46;':'background:#fef3c7;color:#92400e;'}">${t.status==='replied'?'✅ 已回复':'⏳ 待回复'}</span>
           </div>
-          <div style="font-size:13px;color:#374151;white-space:pre-wrap;line-height:1.6;">${escapeHtml(t.content)}</div>
-          ${t.contact ? `<div style="font-size:11px;color:#6b7280;margin-top:4px;">📞 ${escapeHtml(t.contact)}</div>` : ''}
-          ${t.admin_reply ? `
+          <div style="font-size:13px;color:#374151;white-space:pre-wrap;line-height:1.6;">${escapeHtml(t.content)}</div>`;
+        if (t.has_image && t.image_base64) {
+          html += `<div style="margin-top:6px;"><img src="${t.image_base64}" style="max-width:160px;max-height:160px;border-radius:6px;border:1px solid #e5e7eb;cursor:pointer;" onclick="window.open('${t.image_base64}','_blank')"></div>`;
+        }
+        if (t.ai_analysis) {
+          html += `<div style="background:#eff6ff;border-left:3px solid #3b82f6;padding:8px 12px;margin-top:10px;border-radius:0 6px 6px 0;">
+            <div style="font-size:11px;color:#1d4ed8;font-weight:600;margin-bottom:4px;">🤖 AI 自动分析</div>
+            <div style="font-size:13px;color:#1e40af;white-space:pre-wrap;line-height:1.6;">${escapeHtml(t.ai_analysis)}</div>
+          </div>`;
+        } else {
+          html += `<div style="margin-top:6px;font-size:11px;color:#9ca3af;">🤖 AI 分析中...（通常几秒完成）</div>`;
+        }
+        if (t.contact) {
+          html += `<div style="font-size:11px;color:#6b7280;margin-top:4px;">📞 ${escapeHtml(t.contact)}</div>`;
+        }
+        if (t.admin_reply) {
+          html += `
             <div style="background:#f0fdf4;border-left:3px solid #10b981;padding:8px 12px;margin-top:10px;border-radius:0 6px 6px 0;">
               <div style="font-size:11px;color:#059669;font-weight:600;margin-bottom:4px;">💬 客服回复 ${t.replied_at? '· '+formatTime(t.replied_at):''}</div>
               <div style="font-size:13px;color:#065f46;white-space:pre-wrap;line-height:1.6;">${escapeHtml(t.admin_reply)}</div>
-            </div>
-          ` : ''}
-        </div>
-      `).join('');
+            </div>`;
+        }
+        html += `</div>`;
+        return html;
+      }).join('');
     } catch (e) {
       listEl.innerHTML = '<div style="text-align:center;color:#dc2626;padding:30px;">加载失败</div>';
     }

@@ -102,6 +102,7 @@ class FeedbackSubmitRequest(BaseModel):
     fingerprint: str = Field(..., min_length=10)
     content: str = Field(..., min_length=1, max_length=2000)
     contact: Optional[str] = Field(default="", max_length=200)
+    image_base64: Optional[str] = Field(default="", max_length=10 * 1024 * 1024)  # 最大约 10MB
 
 
 class AdminReplyRequest(BaseModel):
@@ -449,22 +450,141 @@ def activate_code(req: ActivateRequest, request: Request):
 
 
 # ========== AI 客服：反馈工单 ==========
+
+async def _run_ai_feedback_analysis(feedback_id: str, content: str, image_base64: str):
+    """后台任务：AI 自动分析反馈（可能看图 + 看文字，给出初步判断）。"""
+    import asyncio
+    try:
+        # 先抽掉 data:image/xxx;base64, 前缀
+        img_clean = ""
+        if image_base64:
+            prefix = image_base64.find(",")
+            img_clean = image_base64[prefix+1:] if prefix >= 0 else image_base64
+
+        # 看图 + 文字，综合分析
+        if img_clean:
+            # 先用视觉模型识别截图中的文字
+            try:
+                ocr_text = call_vision_ocr(img_clean)
+            except Exception:
+                ocr_text = "（截图识别失败）"
+            analysis_prompt = f"""请分析以下用户反馈，判断问题类型、严重程度，并给出可能原因和解决建议。
+
+用户反馈文字：
+{content}
+
+截图识别到的内容：
+{ocr_text}
+
+请按以下 JSON 格式输出，只输出 JSON：
+{{
+  "category": "问题分类（功能Bug/UI问题/性能/使用困惑/其他）",
+  "severity": "严重程度（high/medium/low）",
+  "possible_cause": "可能原因分析，50字以内",
+  "suggestion": "给用户的解决建议，100字以内",
+  "need_human": "是否需要管理员介入（true/false）"
+}}"""
+        else:
+            analysis_prompt = f"""请分析以下用户反馈，判断问题类型、严重程度，并给出可能原因和解决建议。
+
+用户反馈：
+{content}
+
+请按以下 JSON 格式输出，只输出 JSON：
+{{
+  "category": "问题分类（功能Bug/UI问题/性能/使用困惑/其他）",
+  "severity": "严重程度（high/medium/low）",
+  "possible_cause": "可能原因分析，50字以内",
+  "suggestion": "给用户的解决建议，100字以内",
+  "need_human": "是否需要管理员介入（true/false）"
+}}"""
+
+        # 调 AI
+        analysis_raw = call_llm(analysis_prompt)
+
+        # 解析 JSON 并格式化成可读文本
+        analysis_text = _format_ai_analysis(analysis_raw)
+
+        # 存数据库
+        db.save_ai_analysis(feedback_id, analysis_text)
+        logger.info("AI 反馈分析完成 fid=%s", feedback_id)
+    except Exception as e:
+        logger.warning("AI 反馈分析失败 fid=%s: %s", feedback_id, e)
+
+
+def _format_ai_analysis(raw: str) -> str:
+    """把 AI 返回的 JSON 格式化成可读文本（容错 markdown 包裹 + JSON 解析失败降级）。"""
+    import re, json
+    text = raw.strip()
+    # 去 markdown code fence
+    text = re.sub(r"^```(?:json)?\s*", "", text)
+    text = re.sub(r"\s*```$", "", text)
+    # 截取 JSON 区间
+    start = text.find("{")
+    end = text.rfind("}")
+    if start >= 0 and end > start:
+        text = text[start:end+1]
+    try:
+        obj = json.loads(text)
+        cat = obj.get("category", "未分类")
+        sev = obj.get("severity", "unknown")
+        sev_map = {"high": "🔴 高", "medium": "🟡 中", "low": "🟢 低", "unknown": "⚪ 未知"}
+        cause = obj.get("possible_cause", "")
+        suggestion = obj.get("suggestion", "")
+        need = obj.get("need_human", False)
+        lines = [
+            f"【分类】{cat}  严重度 {sev_map.get(sev, sev)}",
+        ]
+        if cause:
+            lines.append(f"【可能原因】{cause}")
+        if suggestion:
+            lines.append(f"【AI 建议】{suggestion}")
+        lines.append(f"【需人工介入】{'是' if need else '否'}")
+        return "\n".join(lines)
+    except Exception:
+        # JSON 解析失败，直接返回原文
+        return raw[:500]
+
+
 @app.post("/api/feedback/submit", tags=["feedback"])
 async def submit_feedback(req: FeedbackSubmitRequest, request: Request):
-    """用户提交反馈工单。"""
+    """用户提交反馈工单（支持可选截图 + AI 自动分析）。"""
+    import asyncio
     ip = get_client_ip(request)
     try:
-        fb = db.create_feedback(req.fingerprint, req.content.strip(), (req.contact or "").strip())
-        logger.info("反馈已提交 ip=%s fid=%s", ip, fb["id"])
-        # 异步飞书通知（不等待）
+        # 图片大小检查
+        if req.image_base64 and len(req.image_base64) > 5 * 1024 * 1024:
+            return JSONResponse(status_code=413, content={"ok": False, "detail": "图片过大，请压缩后再上传（建议 1MB 以内）"})
+
+        fb = db.create_feedback(
+            req.fingerprint,
+            req.content.strip(),
+            (req.contact or "").strip(),
+            image_base64=req.image_base64 or "",
+        )
+        logger.info("反馈已提交 ip=%s fid=%s has_image=%s", ip, fb["id"], bool(req.image_base64))
+
+        # 异步后台任务：AI 自动分析（不阻塞响应）
+        asyncio.create_task(
+            _run_ai_feedback_analysis(fb["id"], req.content, req.image_base64 or "")
+        )
+
+        # 飞书通知（附带 AI 分析状态）
         try:
+            img_hint = "📷 含截图" if req.image_base64 else "（无截图）"
             await notify_feishu_webhook(
                 title="📮 新用户反馈",
-                content=f"用户 IP: {ip}\n联系方式: {req.contact or '（未留）'}\n\n{req.content[:500]}",
+                content=f"用户 IP: {ip}\n联系方式: {req.contact or '（未留）'}\n{img_hint}\n\n{req.content[:500]}\n\n🤖 AI 正在自动分析...",
             )
         except Exception:
             pass
-        return JSONResponse(content={"ok": True, "feedback": fb})
+
+        return JSONResponse(content={
+            "ok": True,
+            "feedback": fb,
+            "ai_analyzing": True,
+            "message": "提交成功！AI 正在自动分析问题，稍后你可以在「我的工单」里查看",
+        })
     except Exception as e:
         logger.error("反馈提交失败: %s", e)
         raise HTTPException(status_code=500, detail="反馈提交失败，请稍后再试")
@@ -519,6 +639,20 @@ def admin_list_feedbacks(status: Optional[str] = None, limit: int = 100,
     """管理员列出所有工单。"""
     items = db.list_all_feedbacks(status=status, limit=min(limit, 500))
     return JSONResponse(content={"items": items})
+
+
+@app.get("/api/admin/daily-report", tags=["admin"])
+def admin_daily_report(date: Optional[str] = None,
+                       _: bool = Depends(_require_admin)):
+    """
+    管理员每日报告。date 格式 YYYY-MM-DD，默认今天。
+    返回统计 + 今日工单摘要列表。
+    """
+    try:
+        report = db.get_daily_report(date)
+        return JSONResponse(content=report)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @app.post("/api/admin/feedbacks/{feedback_id}/reply", tags=["admin"])
