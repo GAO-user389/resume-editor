@@ -61,10 +61,13 @@ FEISHU_WEBHOOK_URL = os.getenv("FEISHU_WEBHOOK_URL", "")    # 飞书群机器人
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "admin123")    # 管理后台密码（务必改！）
 
 # ========== 邮件通知（管理员回复工单时自动发邮件给用户）==========
-# QQ 邮箱配置最方便，其他邮箱类似
+# Resend HTTP API（推荐，Render Free 版可用）—— 免费每天 100 封
+RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")           # 从 https://resend.com 注册获取
+
+# 以下是 SMTP 备用（Render Free 版出网被屏蔽，基本不可用）
 EMAIL_SMTP_HOST = os.getenv("EMAIL_SMTP_HOST", "smtp.qq.com")
 EMAIL_SMTP_PORT = int(os.getenv("EMAIL_SMTP_PORT", "465"))
 EMAIL_USE_SSL = os.getenv("EMAIL_USE_SSL", "true").lower() == "true"
-EMAIL_USER = os.getenv("EMAIL_USER", "")                    # 发件邮箱（如 123456@qq.com）
-EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD", "")            # 授权码（QQ 邮箱设置里生成，不是登录密码！）
+EMAIL_USER = os.getenv("EMAIL_USER", "")
+EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD", "")
 EMAIL_FROM_NAME = os.getenv("EMAIL_FROM_NAME", "简历编辑器客服")
