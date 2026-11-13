@@ -812,35 +812,50 @@ def admin_delete(feedback_id: str, _: bool = Depends(_require_admin)):
 
 @app.get("/api/admin/test-smtp", tags=["admin"])
 def admin_test_smtp(_: bool = Depends(_require_admin)):
-    """调试用：测试邮件连通性（后台线程跑，立即返回）。结果会打到日志里。"""
-    import threading
+    """调试用：同步测试邮件连通性，直接返回 Resend API 的真实结果。"""
     from . import config
+    import requests as req_lib
 
-    key_configured = bool(config.RESEND_API_KEY)
-    email_set = bool(config.EMAIL_USER and config.EMAIL_PASSWORD)
+    result = {
+        "resend_configured": bool(config.RESEND_API_KEY),
+        "email_user": config.EMAIL_USER,
+        "email_user_masked": (config.EMAIL_USER[:3] + "***" + config.EMAIL_USER[-8:]) if config.EMAIL_USER else "",
+        "password_set": bool(config.EMAIL_PASSWORD),
+    }
 
-    # 后台线程跑
-    def _run_test():
-        try:
-            from server.email_client import send_email
-            ok = send_email(
-                to_email=config.EMAIL_USER or "XGTX20020526@163.com",
-                subject="简历编辑器 Resend 调试邮件",
-                html_body="<h2>✅ Resend 邮件系统正常！</h2><p>这是一封调试邮件，收到说明配置正确。</p>",
-                plain_body="✅ Resend 邮件系统正常！",
-            )
-            logger.info("test-smtp 结果 ok=%s", ok)
-        except Exception as e:
-            logger.error("test-smtp 异常: %s", e)
+    if not config.RESEND_API_KEY:
+        result["error"] = "RESEND_API_KEY 未配置"
+        return JSONResponse(content=result)
 
-    threading.Thread(target=_run_test, daemon=True).start()
+    # 同步调 Resend（给管理员自己发一封）
+    to = config.EMAIL_USER or "XGTX20020526@163.com"
+    payload = {
+        "from": f"{config.EMAIL_FROM_NAME} <{config.EMAIL_USER}>",
+        "to": [to],
+        "subject": "简历编辑器 Resend 测试",
+        "html": "<h2>✅ Resend OK!</h2><p>这是同步测试邮件。</p>",
+    }
 
-    return JSONResponse(content={
-        "started": True,
-        "resend_configured": key_configured,
-        "email_user": config.EMAIL_USER[:3] + "***" if config.EMAIL_USER else "",
-        "note": "测试已在后台发起，检查 Render Logs 看结果（关键字 test-smtp）",
-    })
+    try:
+        resp = req_lib.post(
+            "https://api.resend.com/emails",
+            json=payload,
+            headers={"Authorization": f"Bearer {config.RESEND_API_KEY}"},
+            timeout=20,
+        )
+        result["resend_http_status"] = resp.status_code
+        result["resend_response"] = resp.text[:500]
+        result["success"] = resp.status_code in (200, 201)
+        if result["success"]:
+            data = resp.json()
+            result["resend_email_id"] = data.get("id", "")
+    except Exception as e:
+        import traceback
+        result["error"] = str(e)
+        result["traceback"] = traceback.format_exc()[-300:]
+        result["success"] = False
+
+    return JSONResponse(content=result)
 
 
 @app.get("/admin", response_class=HTMLResponse, tags=["admin"])
