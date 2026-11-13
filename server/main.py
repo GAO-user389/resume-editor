@@ -488,7 +488,7 @@ def _run_ai_feedback_analysis(feedback_id: str, content: str, image_base64: str)
   "need_human": "是否需要管理员介入（true/false）"
 }}"""
 
-        analysis_raw = call_llm(analysis_prompt)
+        analysis_raw = call_llm(analysis_prompt, system_prompt="你是简历编辑器的技术客服，负责分析用户反馈并给出诊断。严格按 JSON 输出。")
         analysis_text = _format_ai_analysis(analysis_raw)
         analysis_json = _safe_parse_json(analysis_raw)
         category = analysis_json.get("category", "") if analysis_json else ""
@@ -563,7 +563,7 @@ AI 诊断：
 如果问题太模糊或信息不够，输出："⚠️ 信息不足，需要更多上下文才能给出修复方案"。"""
 
     try:
-        return call_llm(prompt)[:800]
+        return call_llm(prompt, system_prompt="你是资深全栈开发者，负责给 bug 写修复方案。")[:800]
     except Exception as e:
         return f"⚠️ AI 生成修复方案失败：{e}"
 
