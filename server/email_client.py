@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 def _send_resend(to_email: str, subject: str, html_body: str, plain_body: str = "") -> bool:
     """用 Resend HTTP API 发邮件（Render 上首选，HTTP 出站正常）。"""
-    import requests as req_lib
+    import httpx
 
     payload = {
         "from": f"{config.EMAIL_FROM_NAME} <{config.EMAIL_USER}>",
@@ -26,7 +26,7 @@ def _send_resend(to_email: str, subject: str, html_body: str, plain_body: str = 
         payload["text"] = plain_body
 
     try:
-        resp = req_lib.post(
+        resp = httpx.post(
             "https://api.resend.com/emails",
             json=payload,
             headers={"Authorization": f"Bearer {config.RESEND_API_KEY}"},

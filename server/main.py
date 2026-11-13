@@ -814,20 +814,18 @@ def admin_delete(feedback_id: str, _: bool = Depends(_require_admin)):
 def admin_test_smtp(_: bool = Depends(_require_admin)):
     """调试用：同步测试邮件连通性，直接返回 Resend API 的真实结果。"""
     from . import config
-    import requests as req_lib
+    import httpx
 
     result = {
         "resend_configured": bool(config.RESEND_API_KEY),
         "email_user": config.EMAIL_USER,
         "email_user_masked": (config.EMAIL_USER[:3] + "***" + config.EMAIL_USER[-8:]) if config.EMAIL_USER else "",
-        "password_set": bool(config.EMAIL_PASSWORD),
     }
 
     if not config.RESEND_API_KEY:
         result["error"] = "RESEND_API_KEY 未配置"
         return JSONResponse(content=result)
 
-    # 同步调 Resend（给管理员自己发一封）
     to = config.EMAIL_USER or "XGTX20020526@163.com"
     payload = {
         "from": f"{config.EMAIL_FROM_NAME} <{config.EMAIL_USER}>",
@@ -837,7 +835,7 @@ def admin_test_smtp(_: bool = Depends(_require_admin)):
     }
 
     try:
-        resp = req_lib.post(
+        resp = httpx.post(
             "https://api.resend.com/emails",
             json=payload,
             headers={"Authorization": f"Bearer {config.RESEND_API_KEY}"},
@@ -852,7 +850,7 @@ def admin_test_smtp(_: bool = Depends(_require_admin)):
     except Exception as e:
         import traceback
         result["error"] = str(e)
-        result["traceback"] = traceback.format_exc()[-300:]
+        result["traceback"] = traceback.format_exc()[-500:]
         result["success"] = False
 
     return JSONResponse(content=result)
