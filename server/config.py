@@ -53,8 +53,10 @@ AI_VISION_MODEL = os.getenv("AI_VISION_MODEL", "glm-4v")
 NOT_A_RESUME_FLAG = "NOT_A_RESUME"
 
 # ========== 商业化配置 ==========
-FREE_CALLS_LIMIT = int(os.getenv("FREE_CALLS_LIMIT", "5"))  # 免费 AI 调用次数
-PREMIUM_PRICE = os.getenv("PREMIUM_PRICE", "19.9")          # 买断价格
+FREE_CALLS_DAILY = int(os.getenv("FREE_CALLS_DAILY", "3"))   # 免费：每天 AI 改写次数
+MONTHLY_PRICE = os.getenv("MONTHLY_PRICE", "9.9")            # ¥9.9 买断 30 天
+PERMANENT_PRICE = os.getenv("PERMANENT_PRICE", "19.9")       # ¥19.9 永久 + 高级模板
+MONTHLY_DAYS = int(os.getenv("MONTHLY_DAYS", "30"))          # 30 天期限
 
 # ========== AI 客服 / 工单系统 ==========
 FEISHU_WEBHOOK_URL = os.getenv("FEISHU_WEBHOOK_URL", "")    # 飞书群机器人 webhook（用户提交反馈时推送）

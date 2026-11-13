@@ -1,16 +1,16 @@
 # -*- coding: utf-8 -*-
 """
-数据库操作模块（Supabase PostgreSQL）。
-- 用户（设备指纹）管理
-- 免费次数计数
-- 激活码验证与核销
+数据库操作模块（Supabase PostgreSQL + Redis 每日计数）。
+- 用户（设备指纹）管理 + 套餐（free/monthly/permanent）
+- 每日免费次数（Redis key: free:{user_id}:{YYYY-MM-DD}，自动过期）
+- 激活码验证与核销（支持 30 天 / 永久 两种）
 - 反馈工单系统
 """
 import os
 import time
 import threading
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 import psycopg2
@@ -20,6 +20,16 @@ DSN = os.getenv("DATABASE_URL", "")
 
 _pool: Optional[SimpleConnectionPool] = None
 _pool_lock = threading.Lock()
+
+# Redis client（每日免费次数用）
+try:
+    import redis as _redis
+    _REDIS_URL = os.getenv("REDIS_URL", "")
+    _redis_client = _redis.from_url(_REDIS_URL, socket_connect_timeout=2, socket_timeout=2) if _REDIS_URL else None
+    if _redis_client:
+        _redis_client.ping()
+except Exception:
+    _redis_client = None
 
 
 def get_pool() -> SimpleConnectionPool:
@@ -52,26 +62,30 @@ def get_conn():
 
 # ========== 用户操作 ==========
 def get_or_create_user(fingerprint: str) -> dict:
-    """根据设备指纹获取或创建用户，返回用户信息。"""
+    """根据设备指纹获取或创建用户，返回用户信息（含 plan + expires_at）。"""
     with get_conn() as conn:
         cur = conn.cursor()
         cur.execute(
-            "SELECT id, fingerprint, free_calls_used, is_premium, activation_code_id "
+            "SELECT id, fingerprint, free_calls_used, plan, expires_at, activation_code_id "
             "FROM users WHERE fingerprint = %s",
             (fingerprint,),
         )
         row = cur.fetchone()
         if row:
+            plan = row[3] or 'free'
+            expires_at = row[4]
             return {
                 "id": str(row[0]),
                 "fingerprint": row[1],
                 "free_calls_used": row[2],
-                "is_premium": row[3],
-                "activation_code_id": str(row[4]) if row[4] else None,
+                "plan": plan,
+                "expires_at": expires_at.isoformat() if expires_at else None,
+                "is_premium": plan != 'free' and _is_plan_active(plan, expires_at),
+                "activation_code_id": str(row[5]) if row[5] else None,
             }
         # 新建用户
         cur.execute(
-            "INSERT INTO users (fingerprint) VALUES (%s) RETURNING id",
+            "INSERT INTO users (fingerprint, plan) VALUES (%s, 'free') RETURNING id",
             (fingerprint,),
         )
         uid = str(cur.fetchone()[0])
@@ -79,13 +93,86 @@ def get_or_create_user(fingerprint: str) -> dict:
             "id": uid,
             "fingerprint": fingerprint,
             "free_calls_used": 0,
+            "plan": "free",
+            "expires_at": None,
             "is_premium": False,
             "activation_code_id": None,
         }
 
 
-def increment_free_calls(user_id: str) -> int:
-    """用户免费次数 +1，返回当前已用次数。"""
+def _is_plan_active(plan: str, expires_at) -> bool:
+    """检查套餐是否在有效期内。permanent 永远有效，monthly 检查过期时间。"""
+    if plan == 'permanent':
+        return True
+    if plan == 'monthly' and expires_at:
+        return expires_at > datetime.now(expires_at.tzinfo) if expires_at.tzinfo else expires_at > datetime.now()
+    return False
+
+
+def get_user_entitlement(user_id: str) -> dict:
+    """
+    获取用户当前权益。
+    返回 {plan: str, is_active: bool, has_premium_templates: bool, expires_at: str|None}
+    """
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT plan, expires_at FROM users WHERE id = %s", (user_id,))
+        row = cur.fetchone()
+        if not row:
+            return {"plan": "free", "is_active": False, "has_premium_templates": False, "expires_at": None}
+        plan = row[0] or 'free'
+        expires_at = row[1]
+        is_active = _is_plan_active(plan, expires_at)
+        return {
+            "plan": plan,
+            "is_active": is_active,
+            "has_premium_templates": plan == 'permanent',  # 仅永久档有高级模板
+            "expires_at": expires_at.isoformat() if expires_at else None,
+        }
+
+
+def _today_key(user_id: str) -> str:
+    """Redis key: 每日计数。"""
+    today = datetime.now().strftime("%Y-%m-%d")
+    return f"free:{user_id}:{today}"
+
+
+def get_daily_remaining(user_id: str, daily_limit: int) -> int:
+    """获取今日剩余免费次数（Redis 每日自动重置）。"""
+    # 先检查用户是不是付费/过期
+    ent = get_user_entitlement(user_id)
+    if ent["is_active"]:
+        return -1  # 付费用户不限
+
+    if _redis_client:
+        try:
+            used = int(_redis_client.get(_today_key(user_id)) or 0)
+            return max(0, daily_limit - used)
+        except Exception:
+            pass
+
+    # Redis 不可达降级：用数据库累计（尽量不要走到这）
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT free_calls_used FROM users WHERE id = %s", (user_id,))
+        row = cur.fetchone()
+        return max(0, daily_limit - (row[0] if row else 0))
+
+
+def increment_daily_free_calls(user_id: str) -> int:
+    """今日免费次数 +1，返回当前已用次数。Redis 不可达时降级。"""
+    if _redis_client:
+        try:
+            key = _today_key(user_id)
+            pipe = _redis_client.pipeline()
+            pipe.incr(key)
+            pipe.expire(key, 86400)  # 24 小时后自动过期
+            results = pipe.execute()
+            return results[0] or 0
+        except Exception:
+            pass
+
+    # 降级到数据库
     with get_conn() as conn:
         cur = conn.cursor()
         cur.execute(
@@ -97,45 +184,56 @@ def increment_free_calls(user_id: str) -> int:
         return row[0] if row else 0
 
 
-def get_free_calls_remaining(user_id: str, total_free: int) -> int:
-    """获取剩余免费次数。"""
-    with get_conn() as conn:
-        cur = conn.cursor()
-        cur.execute("SELECT free_calls_used, is_premium FROM users WHERE id = %s", (user_id,))
-        row = cur.fetchone()
-        if not row:
-            return total_free
-        used, is_premium = row
-        if is_premium:
-            return -1  # -1 表示无限
-        return max(0, total_free - used)
-
-
 # ========== 激活码操作 ==========
-def verify_and_use_code(code: str, user_id: str) -> bool:
-    """验证激活码并核销（绑定到用户）。成功返回 True。"""
+def verify_and_use_code(code: str, user_id: str) -> dict:
+    """
+    验证激活码并核销（绑定到用户）。
+    成功返回 {"ok": True, "plan": str, "expires_at": str|None}，失败返回 {"ok": False}。
+    """
     code = code.strip().upper()
     with get_conn() as conn:
         cur = conn.cursor()
         # 条件更新：只更新未使用的激活码（天然防并发，兼容 pooler）
+        # 同时读取 plan 和 days
         cur.execute(
             "UPDATE activation_codes SET is_used = TRUE, used_by = %s, used_at = NOW() "
-            "WHERE code = %s AND is_used = FALSE RETURNING id",
+            "WHERE code = %s AND is_used = FALSE RETURNING id, plan, days",
             (user_id, code),
         )
         row = cur.fetchone()
         if not row:
-            return False  # 激活码不存在或已被使用
-        code_id = row[0]
-        cur.execute(
-            "UPDATE users SET is_premium = TRUE, activation_code_id = %s, updated_at = NOW() WHERE id = %s",
-            (code_id, user_id),
-        )
-        return True
+            return {"ok": False}
+
+        code_id, plan, days = row[0], (row[1] or 'permanent'), row[2]
+
+        # 计算 expires_at
+        expires_at = None
+        if plan == 'monthly' and days:
+            expires_at = datetime.utcnow() + timedelta(days=days)
+
+        # 更新用户套餐
+        if expires_at:
+            cur.execute(
+                "UPDATE users SET plan = %s, expires_at = %s, activation_code_id = %s, updated_at = NOW() WHERE id = %s",
+                (plan, expires_at, code_id, user_id),
+            )
+            expires_at_str = expires_at.isoformat()
+        else:
+            cur.execute(
+                "UPDATE users SET plan = %s, expires_at = NULL, activation_code_id = %s, updated_at = NOW() WHERE id = %s",
+                (plan, code_id, user_id),
+            )
+            expires_at_str = None
+
+        return {"ok": True, "plan": plan, "expires_at": expires_at_str}
 
 
-def batch_create_codes(count: int) -> list:
-    """批量生成激活码（管理员用）。返回激活码列表。"""
+def batch_create_codes(count: int, plan: str = "permanent", days: int = None) -> list:
+    """
+    批量生成激活码（管理员用）。
+    plan: 'permanent'（¥19.9 永久）或 'monthly'（¥9.9 30 天）
+    days: monthly 时必填，permanent 时忽略
+    """
     import secrets
     codes = []
     with get_conn() as conn:
@@ -144,7 +242,10 @@ def batch_create_codes(count: int) -> list:
             while True:
                 code = f"RESUME-{secrets.token_hex(3).upper()}-{secrets.token_hex(3).upper()}"
                 try:
-                    cur.execute("INSERT INTO activation_codes (code) VALUES (%s)", (code,))
+                    cur.execute(
+                        "INSERT INTO activation_codes (code, plan, days) VALUES (%s, %s, %s)",
+                        (code, plan, days),
+                    )
                     codes.append(code)
                     break
                 except psycopg2.IntegrityError:

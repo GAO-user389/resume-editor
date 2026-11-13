@@ -241,7 +241,7 @@ def ai_chat(req: AIChatRequest, request: Request):
     if not quota["ok"]:
         raise HTTPException(
             status_code=403,
-            detail=f"今日免费次数已用完（{config.FREE_CALLS_LIMIT}次），请购买买断后继续使用",
+            detail=f"今日免费次数已用完（{config.FREE_CALLS_DAILY}次/天），请购买 ¥{config.MONTHLY_PRICE} 30天或 ¥{config.PERMANENT_PRICE} 永久版后继续使用",
         )
 
     # 调用 AI
@@ -265,12 +265,12 @@ def ai_chat(req: AIChatRequest, request: Request):
     if content.strip() == config.NOT_A_RESUME_FLAG:
         raise HTTPException(status_code=422, detail="请粘贴简历内容后再试")
 
-    # AI 调用成功，递增免费次数（仅非买断用户）
+    # AI 调用成功，递增每日免费次数（仅免费用户）
     if not quota["is_premium"] and quota["user_id"]:
         try:
-            db.increment_free_calls(quota["user_id"])
+            db.increment_daily_free_calls(quota["user_id"])
         except Exception as e:
-            logger.warning("免费次数递增失败: %s", e)
+            logger.warning("每日免费次数递增失败: %s", e)
 
     remaining = quota["remaining"] if quota["is_premium"] else max(0, quota["remaining"] - 1)
     return JSONResponse(
@@ -296,7 +296,7 @@ def ai_ocr(req: OCRRequest, request: Request):
     if not quota["ok"]:
         raise HTTPException(
             status_code=403,
-            detail=f"今日免费次数已用完（{config.FREE_CALLS_LIMIT}次），请购买买断后继续使用",
+            detail=f"今日免费次数已用完（{config.FREE_CALLS_DAILY}次/天），请购买 ¥{config.MONTHLY_PRICE} 30天或 ¥{config.PERMANENT_PRICE} 永久版后继续使用",
         )
 
     try:
@@ -312,12 +312,12 @@ def ai_ocr(req: OCRRequest, request: Request):
         logger.error("OCR 未知错误 ip=%s detail=%s", get_client_ip(request), e.detail)
         raise HTTPException(status_code=e.status_code, detail=e.message)
 
-    # OCR 成功，递增免费次数
+    # OCR 成功，递增每日免费次数
     if not quota["is_premium"] and quota["user_id"]:
         try:
-            db.increment_free_calls(quota["user_id"])
+            db.increment_daily_free_calls(quota["user_id"])
         except Exception as e:
-            logger.warning("免费次数递增失败: %s", e)
+            logger.warning("每日免费次数递增失败: %s", e)
 
     remaining = quota["remaining"] if quota["is_premium"] else max(0, quota["remaining"] - 1)
     return JSONResponse(
@@ -382,66 +382,85 @@ def feishu_test_connection(req: FeishuTestRequest, request: Request):
         raise HTTPException(status_code=e.code, detail=e.message)
 
 
-# ========== 商业化：设备指纹 + 免费次数 + 激活码 ==========
+# ========== 商业化：设备指纹 + 每日配额 + 激活码（3档） ==========
 def check_quota(fingerprint: str) -> dict:
     """
     检查用户配额。
-    返回 {ok: bool, remaining: int, is_premium: bool, user_id: str}
-    remaining: 剩余免费次数（-1 表示无限，is_premium=true）
+    返回 {ok: bool, remaining: int, is_premium: bool, plan: str, user_id: str, entitlement: dict}
     """
     try:
         user = db.get_or_create_user(fingerprint)
-        is_premium = user["is_premium"]
+        ent = db.get_user_entitlement(user["id"])
+        is_premium = ent["is_active"]
         if is_premium:
-            return {"ok": True, "remaining": -1, "is_premium": True, "user_id": user["id"]}
-        remaining = db.get_free_calls_remaining(user["id"], config.FREE_CALLS_LIMIT)
-        return {"ok": remaining > 0, "remaining": remaining, "is_premium": False, "user_id": user["id"]}
+            return {
+                "ok": True, "remaining": -1, "is_premium": True,
+                "plan": ent["plan"], "user_id": user["id"], "entitlement": ent,
+            }
+        remaining = db.get_daily_remaining(user["id"], config.FREE_CALLS_DAILY)
+        return {
+            "ok": remaining > 0, "remaining": remaining, "is_premium": False,
+            "plan": "free", "user_id": user["id"], "entitlement": ent,
+        }
     except Exception as e:
-        # 数据库不可用时，降级为放行（不影响现有用户）
         logger.warning("数据库不可用，降级放行: %s", e)
-        return {"ok": True, "remaining": -1, "is_premium": False, "user_id": ""}
+        return {"ok": True, "remaining": -1, "is_premium": False, "plan": "free", "user_id": "", "entitlement": {}}
 
 
 @app.post("/api/auth/identify", tags=["auth"])
 def identify_device(req: IdentifyRequest, request: Request):
-    """
-    设备指纹识别：返回用户状态（免费次数、是否买断）。
-    前端每次加载页面时调用。
-    """
+    """设备指纹识别：返回用户状态（套餐、每日剩余、高级模板权限）。"""
     ip = get_client_ip(request)
     try:
         user = db.get_or_create_user(req.fingerprint)
-        is_premium = user["is_premium"]
-        remaining = -1 if is_premium else db.get_free_calls_remaining(user["id"], config.FREE_CALLS_LIMIT)
-        logger.info("设备识别 ip=%s premium=%s", ip, is_premium)
+        ent = db.get_user_entitlement(user["id"])
+        if ent["is_active"]:
+            remaining = -1
+        else:
+            remaining = db.get_daily_remaining(user["id"], config.FREE_CALLS_DAILY)
+        logger.info("设备识别 ip=%s plan=%s active=%s", ip, ent["plan"], ent["is_active"])
         return JSONResponse(content={
-            "is_premium": is_premium,
+            "plan": ent["plan"],
+            "is_premium": ent["is_active"],
+            "has_premium_templates": ent["has_premium_templates"],
+            "expires_at": ent["expires_at"],
             "remaining": remaining,
-            "free_limit": config.FREE_CALLS_LIMIT,
+            "daily_limit": config.FREE_CALLS_DAILY,
+            "monthly_price": config.MONTHLY_PRICE,
+            "permanent_price": config.PERMANENT_PRICE,
         })
     except Exception as e:
         logger.warning("设备识别失败（降级放行）: %s", e)
         return JSONResponse(content={
-            "is_premium": False,
-            "remaining": config.FREE_CALLS_LIMIT,
-            "free_limit": config.FREE_CALLS_LIMIT,
+            "plan": "free", "is_premium": False, "has_premium_templates": False,
+            "expires_at": None, "remaining": config.FREE_CALLS_DAILY,
+            "daily_limit": config.FREE_CALLS_DAILY,
+            "monthly_price": config.MONTHLY_PRICE,
+            "permanent_price": config.PERMANENT_PRICE,
         })
 
 
 @app.post("/api/auth/activate", tags=["auth"])
 def activate_code(req: ActivateRequest, request: Request):
-    """
-    激活码核销：验证激活码并升级为买断用户。
-    """
+    """激活码核销：支持 monthly（¥9.9 30天）和 permanent（¥19.9 永久）两种。"""
     ip = get_client_ip(request)
     try:
         user = db.get_or_create_user(req.fingerprint)
-        if user["is_premium"]:
-            return JSONResponse(content={"ok": True, "message": "您已是买断用户，无需重复激活", "is_premium": True})
-        success = db.verify_and_use_code(req.code, user["id"])
-        if success:
-            logger.info("激活码核销成功 ip=%s", ip)
-            return JSONResponse(content={"ok": True, "message": "激活成功，已升级为买断用户", "is_premium": True})
+        ent = db.get_user_entitlement(user["id"])
+        if ent["is_active"]:
+            return JSONResponse(content={
+                "ok": True, "message": f"您已是{'永久' if ent['plan']=='permanent' else '30天'}用户，无需重复激活",
+                "is_premium": True, "plan": ent["plan"], "expires_at": ent["expires_at"],
+            })
+        result = db.verify_and_use_code(req.code, user["id"])
+        if result["ok"]:
+            plan_label = "永久" if result["plan"] == "permanent" else f"30天（到期 {result['expires_at'][:10] if result['expires_at'] else ''}）"
+            logger.info("激活码核销成功 ip=%s plan=%s", ip, result["plan"])
+            return JSONResponse(content={
+                "ok": True, "message": f"激活成功！已升级为{plan_label}套餐",
+                "is_premium": True, "plan": result["plan"], "expires_at": result["expires_at"],
+                "has_premium_templates": result["plan"] == "permanent",
+            })
         return JSONResponse(status_code=400, content={"ok": False, "message": "激活码无效或已被使用"})
     except Exception as e:
         import traceback
