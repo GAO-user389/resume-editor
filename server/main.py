@@ -385,7 +385,8 @@ def activate_code(req: ActivateRequest, request: Request):
             return JSONResponse(content={"ok": True, "message": "激活成功，已升级为买断用户", "is_premium": True})
         return JSONResponse(status_code=400, content={"ok": False, "message": "激活码无效或已被使用"})
     except Exception as e:
-        logger.warning("激活码核销失败: %s", e)
+        import traceback
+        logger.error("激活码核销失败: %s\n%s", e, traceback.format_exc())
         raise HTTPException(status_code=500, detail="激活服务异常，请稍后再试")
 
 
