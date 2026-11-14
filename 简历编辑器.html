@@ -562,7 +562,7 @@
 
       <!-- 头部 -->
       <div class="resume-header">
-        <img class="avatar" src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA4MCAxMDAiPjxyZWN0IHdpZHRoPSI4MCIgaGVpZ2h0PSIxMDAiIGZpbGw9IiNFNUU3RUIiLz48Y2lyY2xlIGN4PSI0MCIgY3k9IjM1IiByPSIxNSIgZmlsbD0iIzlDQTNDRiIvPjxlbGxpcHNlIGN4PSI0MCIgY3k9IjgwIiByeD0iMjUiIHJ5PSIyMCIgZmlsbD0iIzlDQTNDRiIvPjwvc3ZnPg==" alt="头像" >
+        <img class="avatar" id="resumeAvatar" src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA4MCAxMDAiPjxyZWN0IHdpZHRoPSI4MCIgaGVpZ2h0PSIxMDAiIGZpbGw9IiNFNUU3RUIiLz48Y2lyY2xlIGN4PSI0MCIgY3k9IjM1IiByPSIxNSIgZmlsbD0iIzlDQTNDRiIvPjxlbGxpcHNlIGN4PSI0MCIgY3k9IjgwIiByeD0iMjUiIHJ5PSIyMCIgZmlsbD0iIzlDQTNDRiIvPjwvc3ZnPg==" alt="头像" title="点击上传照片" style="cursor:pointer;" onclick="document.getElementById('avatarUpload').click()">
         <div class="header-info">
           <div class="name" contenteditable="false">你的姓名</div>
           <div class="intent-pill" contenteditable="false">求职意向 · 目标岗位</div>
@@ -3512,6 +3512,28 @@ ${userPrompt || '（无）'}
       }
     } catch(e) {}
   })();
+
+  // 头像上传
+  function handleAvatarUpload(input) {
+    const file = input.files[0];
+    if (!file) return;
+    if (!file.type.startsWith('image/')) { alert('请选择图片文件'); return; }
+    if (file.size > 5 * 1024 * 1024) { alert('图片不能超过 5MB'); return; }
+    const reader = new FileReader();
+    reader.onload = function(e) {
+      const avatar = document.querySelector('.avatar');
+      if (avatar) {
+        avatar.src = e.target.result;
+        avatar.removeAttribute('title');
+        avatar.style.cursor = 'default';
+        avatar.style.borderRadius = '4px';
+      }
+    };
+    reader.readAsDataURL(file);
+  }
 </script>
+
+<!-- 隐藏的头像上传 input -->
+<input type="file" id="avatarUpload" accept="image/*" style="display:none" onchange="handleAvatarUpload(this)">
 </body>
 </html>
