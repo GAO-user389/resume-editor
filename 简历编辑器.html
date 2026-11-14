@@ -1236,9 +1236,7 @@
     // 添加板块按钮仅在编辑模式显示
     document.getElementById('addSectionBtn').style.display = editMode ? '' : 'none';
     if (editMode) {
-      // 恢复上次自动保存
-      loadAutosave();
-      // 确保所有文本元素都有 contenteditable 属性（覆盖原始+上传+自定义板块）
+      // 确保所有文本元素都有 contenteditable 属性
       ensureEditable();
       document.querySelectorAll('#resume [contenteditable]').forEach(el => {
         el.setAttribute('contenteditable', 'true');
@@ -2255,103 +2253,205 @@
   }
 
   // 统一渲染：把 sections dict 渲染成简历 HTML
-  function _buildResumeHTML(sections) {
+  // 把 AI 返回的 sections JSON 填充到原始模板 DOM 里（保留模板 CSS 排版）
+  function applySectionsToTemplate(sections) {
     const h = (s) => (s || '').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-    let html = '<div class="resume-inner">';
-    // 头部（永远有照片占位）
-    html += '<div class="resume-header">';
-    html += `<img class="avatar" id="resumeAvatar" src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA4MCAxMDAiPjxyZWN0IHdpZHRoPSI4MCIgaGVpZ2h0PSIxMDAiIGZpbGw9IiNFNUU3RUIiLz48Y2lyY2xlIGN4PSI0MCIgY3k9IjM1IiByPSIxNSIgZmlsbD0iIzlDQTNDRiIvPjxlbGxpcHNlIGN4PSI0MCIgY3k9IjgwIiByeD0iMjUiIHJ5PSIyMCIgZmlsbD0iIzlDQTNDRiIvPjwvc3ZnPg==" alt="头像" onclick=\"document.getElementById('avatarUpload').click()\" title="点击上传照片" style="cursor:pointer;">`;
-    html += '<input type="file" id="avatarUpload" accept="image/*" style="display:none" onchange="handleAvatarUpload(this)">';
-    html += '<div class="header-text">';
-    if (sections.header) {
-      sections.header.split('\n').forEach(l => {
-        html += `<div class="header-line">${h(l.trim())}</div>`;
-      });
-    }
-    html += '</div></div>';
-    // 教育
-    if (sections.education) {
-      html += `<div class="section"><div class="section-title"><div class="section-title-cn">教育背景</div><div class="section-title-en">EDUCATION</div></div>
-        <div class="section-body" style="white-space:pre-wrap;">${h(sections.education)}</div></div>`;
-    }
-    // 实习
-    if (sections.internship) {
-      html += `<div class="section"><div class="section-title"><div class="section-title-cn">实习经历</div><div class="section-title-en">INTERNSHIP</div></div>
-        <div class="section-body" style="white-space:pre-wrap;">${h(sections.internship)}</div></div>`;
-    }
-    // 项目
-    if (sections.projects) {
-      html += `<div class="section"><div class="section-title"><div class="section-title-cn">项目经历</div><div class="section-title-en">PROJECTS</div></div>
-        <div class="section-body" style="white-space:pre-wrap;">${h(sections.projects)}</div></div>`;
-    }
-    // 技能
-    if (sections.skills) {
-      html += `<div class="section"><div class="section-title"><div class="section-title-cn">技能与证书</div><div class="section-title-en">SKILLS</div></div>
-        <div class="section-body" style="white-space:pre-wrap;">${h(sections.skills)}</div></div>`;
-    }
-    html += '</div>';
-    return html;
-  }
+    const resume = document.getElementById('resume');
 
-  // 照片上传处理
-  function handleAvatarUpload(input) {
-    const f = input.files[0]; if (!f) return;
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const avatar = document.getElementById('resumeAvatar');
-      if (avatar) avatar.src = e.target.result;
-    };
-    reader.readAsDataURL(f);
+    // 1. 填充头部
+    if (sections.header) {
+      const headerLines = sections.header.split('\n').map(l => l.trim()).filter(Boolean);
+      const nameEl = resume.querySelector('.resume-header .name');
+      const intentEl = resume.querySelector('.resume-header .intent-pill');
+      const contactBar = resume.querySelector('.resume-header .contact-bar');
+      
+      const phones = [], emails = [];
+      let nameDone = false, intentDone = false;
+      for (const line of headerLines) {
+        if (/^1[3-9]\d{9}$/.test(line)) phones.push(line);
+        else if (/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/.test(line)) emails.push(line);
+        else if (!nameDone && nameEl && (nameEl.textContent.includes('你的姓名'))) {
+          nameEl.textContent = line; nameDone = true;
+        } else if (!intentDone && intentEl && (intentEl.textContent.includes('求职意向') || intentEl.textContent.includes('目标岗位'))) {
+          intentEl.textContent = '求职意向 · ' + line; intentDone = true;
+        }
+      }
+      if (phones.length && contactBar) {
+        const phoneSpan = contactBar.querySelector('span:first-child .val');
+        if (phoneSpan) phoneSpan.textContent = phones[0];
+      }
+      if (emails.length && contactBar) {
+        const emailSpan = contactBar.querySelector('span:last-child .val');
+        if (emailSpan) emailSpan.textContent = emails[0];
+      }
+    }
+
+    // 2. 找所有 section
+    const allSections = resume.querySelectorAll('#resume .section');
+    
+    function parseDate(line) {
+      const m = line.match(/(\d{4}[\.\-/]\d{1,2}\s*[\-–至]\s*\d{4}[\.\-/]?\d{0,2}|至今|现在)/i);
+      return m ? m[0] : '';
+    }
+
+    function buildEduItem(line) {
+      const date = parseDate(line);
+      const rest = date ? line.replace(date, '').trim() : line;
+      const parts = rest.split(/\s+/);
+      let school = rest, major = '', degree = '';
+      if (parts.length >= 3) {
+        const knownDegrees = ['博士','硕士','本科','大专','专科','MBA'];
+        let degreeIdx = -1;
+        for (let i = parts.length - 1; i >= 0; i--) {
+          if (knownDegrees.some(d => parts[i].includes(d))) { degreeIdx = i; break; }
+        }
+        if (degreeIdx >= 0) {
+          school = parts.slice(0, degreeIdx - 1).join(' ');
+          major = parts.slice(degreeIdx - 1, degreeIdx).join(' ');
+          degree = parts[degreeIdx];
+        } else {
+          school = parts[0];
+          major = parts.slice(1).join(' ');
+        }
+      }
+      const div = document.createElement('div');
+      div.className = 'edu-item';
+      div.innerHTML = '<div class="school"><span contenteditable="false">' + h(school || rest) + '</span>' + (major ? '<span class="major">· ' + h(major) + '</span>' : '') + (degree ? '<span class="degree">' + h(degree) + '</span>' : '') + '</div>' + (date ? '<div class="date" contenteditable="false">' + h(date) + '</div>' : '');
+      return div;
+    }
+
+    function buildExpItem(line) {
+      const date = parseDate(line);
+      const rest = date ? line.replace(date, '').trim() : line;
+      const parts = rest.split(/\s+/);
+      let company = rest, role = '';
+      if (parts.length >= 2) {
+        let companyEnd = Math.min(2, parts.length - 1);
+        for (let i = 1; i < parts.length; i++) {
+          if (parts[i].length > 2) companyEnd = i + 1; else break;
+        }
+        company = parts.slice(0, companyEnd).join(' ');
+        role = parts.slice(companyEnd).join(' ');
+      }
+      const div = document.createElement('div');
+      div.className = 'exp-item';
+      div.innerHTML = '<div class="exp-header"><div><span class="company" contenteditable="false">' + h(company) + '</span>' + (role ? '<span class="role">｜' + h(role) + '</span>' : '') + '</div>' + (date ? '<div class="date" contenteditable="false">' + h(date) + '</div>' : '') + '</div><div class="exp-desc" contenteditable="false"><ul><li>' + h(line) + '</li></ul></div>';
+      return div;
+    }
+
+    function buildSkillCat(line) {
+      let name = line, val = '';
+      const colonMatch = line.match(/^([^:：]+)[:：]\s*(.+)$/);
+      if (colonMatch) { name = colonMatch[1].trim(); val = colonMatch[2].trim(); }
+      const div = document.createElement('div');
+      div.className = 'skill-cat';
+      div.innerHTML = '<div class="skill-name" contenteditable="false">' + h(name) + '</div>' + (val ? '<div class="skill-val" contenteditable="false">' + h(val) + '</div>' : '');
+      return div;
+    }
+
+    // 遍历 4 个板块
+    const sectionMap = [
+      { titleKeywords: ['教育背景', 'EDUCATION', '教育经历'], data: sections.education, itemClass: 'edu-item', builder: buildEduItem },
+      { titleKeywords: ['实习经历', 'INTERNSHIP', '工作经历', 'EXPERIENCE'], data: sections.internship, itemClass: 'exp-item', builder: buildExpItem },
+      { titleKeywords: ['项目经历', 'PROJECTS', '项目经验'], data: sections.projects, itemClass: 'exp-item', builder: buildExpItem },
+      { titleKeywords: ['技能', 'SKILLS', '证书'], data: sections.skills, itemClass: 'skill-cat', builder: buildSkillCat, useGrid: true },
+    ];
+
+    for (const sk of sectionMap) {
+      const sectionEl = Array.from(allSections).find(s => {
+        const title = s.querySelector('.section-title-cn')?.textContent || '';
+        return sk.titleKeywords.some(kw => title.includes(kw));
+      });
+      if (!sectionEl || !sk.data) continue;
+      
+      // 清空旧内容
+      sectionEl.querySelectorAll('.edu-item, .exp-item, .skills-grid, .section-body').forEach(el => el.remove());
+      
+      const lines2 = sk.data.split('\n').map(l => l.trim()).filter(l => l.length > 2);
+      if (sk.useGrid) {
+        const grid = document.createElement('div');
+        grid.className = 'skills-grid';
+        for (const l of lines2) grid.appendChild(sk.builder(l));
+        const lastDivider = sectionEl.querySelector('.section-divider-light');
+        if (lastDivider) lastDivider.insertAdjacentElement('afterend', grid);
+        else sectionEl.appendChild(grid);
+      } else {
+        for (const l of lines2) sectionEl.appendChild(sk.builder(l));
+      }
+    }
   }
 
   async function fillUploadedResume() {
     const text = document.getElementById('uploadedResumeText').value.trim();
     if (!text) { alert('请先上传或粘贴简历内容'); return; }
     const mode = document.querySelector('input[name="fillMode"]:checked').value;
+    const resume = document.getElementById('resume');
+    
+    // loading
+    const modal = document.getElementById('uploadModal');
+    const loadingDiv = document.createElement('div');
+    loadingDiv.className = 'jd-loading';
+    loadingDiv.style.display = 'flex';
+    loadingDiv.style.flexDirection = 'column';
+    loadingDiv.style.gap = '12px';
+    loadingDiv.innerHTML = '<span class="ai-loading"></span>AI 正在分析简历结构...';
+    modal.querySelector('.jd-body').appendChild(loadingDiv);
 
-    if (mode === 'full') {
-      // 整体替换（不走 AI）
-      const resume = document.getElementById('resume');
-      resume.innerHTML = `<div class="resume-inner" style="padding:20px 25px;"><div style="white-space:pre-wrap;font-family:'Microsoft YaHei';font-size:10.5pt;line-height:1.8;color:#1C1C1C;">${text.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</div></div>`;
-    } else {
-      // 智能分板块：优先 AI 结构化，失败降级关键词
-      let sections = null;
-      let usedAI = false;
-      try {
-        const res = await fetch(BACKEND_BASE_URL + '/api/resume/parse', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ text: text, fingerprint: DEVICE_FP }),
-        });
-        if (res.ok) {
-          const data = await res.json();
-          if (data.ok && data.sections && !data.sections.missing_sections.includes('all')) {
-            sections = data.sections;
-            usedAI = true;
-            console.log('✅ AI 结构化解析成功');
+    let ok = false;
+    try {
+      if (mode === 'full') {
+        // 整体替换：保留模板结构，把 header 前几行填进去
+        const headerLines = text.split('\n').filter(l => l.trim().length > 0).slice(0, 6);
+        applySectionsToTemplate({ header: headerLines.join('\n'), education: '', internship: '', projects: '', skills: '' });
+        ok = true;
+      } else {
+        // 智能分板块：优先 AI 结构化
+        let aiSections = null;
+        try {
+          const res = await fetch(BACKEND_BASE_URL + '/api/resume/parse', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text: text, fingerprint: DEVICE_FP }),
+          });
+          if (res.ok) {
+            const data = await res.json();
+            if (data.ok && data.sections) aiSections = data.sections;
           }
+        } catch(e) { console.warn('AI 解析失败:', e.message); }
+
+        if (aiSections) {
+          applySectionsToTemplate(aiSections);
+          ok = true;
+        } else {
+          // 降级：把全文塞到第一个 section
+          const allSecs = resume.querySelectorAll('#resume .section');
+          allSecs.forEach(s => s.querySelectorAll('.edu-item, .exp-item, .skills-grid').forEach(el => el.remove()));
+          if (allSecs[0]) {
+            const body = document.createElement('div');
+            body.className = 'section-body';
+            body.style.whiteSpace = 'pre-wrap';
+            body.textContent = text;
+            allSecs[0].appendChild(body);
+          }
+          ok = true;
         }
-      } catch(e) {
-        console.warn('AI 解析失败，降级关键词分块:', e.message);
       }
-      if (!sections) {
-        sections = splitResumeSections(text);
-        console.log('📌 使用关键词分块');
-      }
-      const resume = document.getElementById('resume');
-      resume.innerHTML = _buildResumeHTML(sections);
+    } catch(e) {
+      alert('填入失败：' + e.message);
+    } finally {
+      loadingDiv.remove();
     }
 
-    // 确保所有文本元素可编辑 + 重置缓存
-    originalSectionOrder = null;
-    ensureEditable();
-    if (!editMode) toggleEdit();
-    document.querySelectorAll('#resume [contenteditable]').forEach(el => el.setAttribute('contenteditable', 'true'));
-    refreshSectionDelButtons();
-    document.getElementById('uploadModal').classList.remove('active');
+    if (ok) {
+      ensureEditable();
+      originalSectionOrder = null;
+      if (!editMode) toggleEdit();
+      document.querySelectorAll('#resume [contenteditable]').forEach(el => el.setAttribute('contenteditable', 'true'));
+      refreshSectionDelButtons();
+      document.getElementById('uploadModal').classList.remove('active');
+    }
   }
-  window.openUploadModal = openUploadModal;
-  window.fillUploadedResume = fillUploadedResume;
+
 
   /* ---------- AI 模型设置 ---------- */
   const AI_SETTINGS_KEY = 'resume_ai_settings';
