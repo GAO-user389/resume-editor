@@ -2274,10 +2274,7 @@
       console.log('[applySections] email:', email, 'match:', JSON.stringify(emailMatch?.[0]?.substring(0,30)));
       // 求职意向: "求职意向:xxx" "目标岗位:xxx" "意向:xxx"
       const intentMatch = raw.match(/(?:求职意向|目标岗位|求职目标|意向)\s*[:：]\s*([^\n\r]+)/i);
-      if (intentMatch) intent = intentMatch[1].trim();
-      console.log('[applySections] intent:', intent);
-      
-      // 名字: 找第一个"短行"（不是手机、不是邮箱、不是带冒号的标签行、长度 2-8 字）
+      if (intentMatch) intent = intentMatch[1].trim();// 名字: 找第一个"短行"（不是手机、不是邮箱、不是带冒号的标签行、长度 2-8 字）
       const headerLines = raw.split('\n').map(l => l.trim()).filter(Boolean);
       for (const line of headerLines) {
         if (line === phone || line.includes(phone)) continue;
