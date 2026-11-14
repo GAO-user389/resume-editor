@@ -1642,8 +1642,26 @@
         let text = '';
         for (let i = 1; i <= doc.numPages; i++) {
           const page = await doc.getPage(i);
-          // 紧凑拼接（PDF 文本块按坐标顺序返回，同一行内容是相邻的 items）
-          text += (await page.getTextContent()).items.map(it => it.str).join(' ') + '\n';
+          const items = (await page.getTextContent()).items;
+          // 按 Y(降序，PDF 坐标向上为正) 再 X(升序) 排序，保证阅读顺序
+          const sorted = items.slice().sort((a, b) => {
+            const ay = a.transform[5], by = b.transform[5];
+            const ax = a.transform[4], bx = b.transform[4];
+            // Y 差小于 3 视为同一行，按 X 排；否则按 Y 降序
+            if (Math.abs(ay - by) < 3) return ax - bx;
+            return by - ay;
+          });
+          // 同一行内用空格拼接，不同行用换行
+          let line = '', lastY = null;
+          for (const it of sorted) {
+            if (lastY !== null && Math.abs(it.transform[5] - lastY) >= 3) {
+              text += line.trim() + '\n';
+              line = '';
+            }
+            line += it.str + ' ';
+            lastY = it.transform[5];
+          }
+          text += line.trim() + '\n';
         }
         // 给板块关键词前后插换行：消耗关键词周围的空白，统一换成换行
         const sectionMarkers = [
@@ -2312,7 +2330,7 @@
     const allSections = resume.querySelectorAll('#resume .section');
     
     function parseDate(line) {
-      const m = line.match(/(\d{4}[\.\-/]\d{1,2}\s*[\-–至]\s*\d{4}[\.\-/]?\d{0,2}|至今|现在)/i);
+      const m = line.match(/(\d{4}[\.\-/]\d{1,2}\s*[\-–至]\s*(?:\d{4}[\.\-/]?\d{0,2}|至今|现在)|至今|现在)/i);
       return m ? m[0] : '';
     }
 
@@ -2393,8 +2411,8 @@
       for (const raw of byLine) {
         const line = raw.trim();
         if (!line) continue;
-        // 在每个日期前插入 \x00 分隔符，再拆分
-        const marked = line.replace(DATE_RE, '\x00$1');
+        // 在每个日期后插入 \x00 分隔符，让日期跟随前面的条目
+        const marked = line.replace(DATE_RE, '$1\x00');
         const segs = marked.split('\x00').map(s => s.trim()).filter(s => s.length > 2);
         out.push(...segs);
       }
