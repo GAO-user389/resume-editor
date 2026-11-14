@@ -2273,7 +2273,8 @@
         else if (!nameDone && nameEl && (nameEl.textContent.includes('你的姓名'))) {
           nameEl.textContent = line; nameDone = true;
         } else if (!intentDone && intentEl && (intentEl.textContent.includes('求职意向') || intentEl.textContent.includes('目标岗位'))) {
-          intentEl.textContent = '求职意向 · ' + line; intentDone = true;
+          const intentText = line.replace(/^求职意向[:：]\s*/i, '').replace(/^目标岗位[:：]\s*/i, '');
+          intentEl.textContent = '求职意向 · ' + intentText; intentDone = true;
         }
       }
       if (phones.length && contactBar) {
