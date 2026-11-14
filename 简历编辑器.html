@@ -1654,6 +1654,9 @@
           '项目经历', '项目经验', 'PROJECTS',
           '技能与证书', '技能', 'SKILLS', 'CERTIFICATE', '证书'
         ];
+        sectionMarkers.sort((a, b) => b.length - a.length);
+        let result = text.trim();
+        for (const kw of sectionMarkers) {
           result = result.replace(new RegExp('(\\S)(' + kw + ')', 'g'), '$1\n$2');
           result = result.replace(new RegExp('(' + kw + ')(\\S)', 'g'), '$1\n$2');
         }
