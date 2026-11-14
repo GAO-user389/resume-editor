@@ -2261,17 +2261,21 @@
     // 1. 填充头部
     if (sections.header) {
       const raw = sections.header.replace(/\r/g, '');
+      console.log('[applySections] raw header:', JSON.stringify(raw));
       // 先从全文中提取 phone/email/intent（不管是不是独立行）
       let phone = '', email = '', intent = '', name = '';
       // 手机: 匹配 "手机:xxx" "Tel: xxx" "📱 150..." "纯 11 位数字" 等
       const phoneMatch = raw.match(/(?:手机|电话|Tel|Phone|联系电话|📱)\s*[:：]?\s*([1][3-9]\d{9})|(^|\s)([1][3-9]\d{9})(\s|$)/i);
       if (phoneMatch) phone = (phoneMatch[1] || phoneMatch[3] || '').trim();
+      console.log('[applySections] phone:', phone, 'match:', JSON.stringify(phoneMatch?.[0]?.substring(0,20)));
       // 邮箱: 任何 @xxx.com/cn 格式
       const emailMatch = raw.match(/([a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,})/);
       if (emailMatch) email = emailMatch[1];
+      console.log('[applySections] email:', email, 'match:', JSON.stringify(emailMatch?.[0]?.substring(0,30)));
       // 求职意向: "求职意向:xxx" "目标岗位:xxx" "意向:xxx"
       const intentMatch = raw.match(/(?:求职意向|目标岗位|求职目标|意向)\s*[:：]\s*([^\n\r]+)/i);
       if (intentMatch) intent = intentMatch[1].trim();
+      console.log('[applySections] intent:', intent);
       
       // 名字: 找第一个"短行"（不是手机、不是邮箱、不是带冒号的标签行、长度 2-8 字）
       const headerLines = raw.split('\n').map(l => l.trim()).filter(Boolean);
