@@ -1644,10 +1644,21 @@
         let text = '';
         for (let i = 1; i <= doc.numPages; i++) {
           const page = await doc.getPage(i);
-          // PDF 文本块逐行拼接（不用空格，保证换行）
-          text += (await page.getTextContent()).items.map(it => it.str).join('\n') + '\n';
+          // 紧凑拼接（PDF 文本块按坐标顺序返回，同一行内容是相邻的 items）
+          text += (await page.getTextContent()).items.map(it => it.str).join(' ') + '\n';
         }
-        return text.trim();
+        // 给板块关键词前后插换行，让 splitResumeSections 能准确切分
+        const sectionMarkers = ['教育背景', '教育经历', 'EDUCATION',
+                                '实习经历', '工作经历', 'INTERNSHIP', 'EXPERIENCE', '实习',
+                                '项目经历', '项目经验', 'PROJECTS',
+                                '技能与证书', '技能', 'SKILLS', 'CERTIFICATE', '证书'];
+        sectionMarkers.sort((a, b) => b.length - a.length);
+        let result = text.trim();
+        for (const kw of sectionMarkers) {
+          result = result.replace(new RegExp('(\\S)(' + kw + ')', 'g'), '$1\n$2');
+          result = result.replace(new RegExp('(' + kw + ')(\\S)', 'g'), '$1\n$2');
+        }
+        return result.trim();
       } else if (name.endsWith('.docx') || name.endsWith('.doc')) {
         const res = await window['mammoth'].extractRawText({ arrayBuffer: buf });
         return res.value.trim();
