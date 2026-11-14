@@ -2312,7 +2312,7 @@
     if (mode === 'full') {
       // 整体替换（不走 AI）
       const resume = document.getElementById('resume');
-      resume.innerHTML = <div class="resume-inner" style="padding:20px 25px;"><div style="white-space:pre-wrap;font-family:'Microsoft YaHei';font-size:10.5pt;line-height:1.8;color:#1C1C1C;"></div></div>;
+      resume.innerHTML = `<div class="resume-inner" style="padding:20px 25px;"><div style="white-space:pre-wrap;font-family:'Microsoft YaHei';font-size:10.5pt;line-height:1.8;color:#1C1C1C;">${text.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</div></div>`;
     } else {
       // 智能分板块：优先 AI 结构化，失败降级关键词
       let sections = null;
