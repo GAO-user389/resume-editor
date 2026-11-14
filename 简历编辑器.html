@@ -2260,7 +2260,7 @@
     let html = '<div class="resume-inner">';
     // 头部（永远有照片占位）
     html += '<div class="resume-header">';
-    html += '<img class="avatar" id="resumeAvatar" src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA4MCAxMDAiPjxyZWN0IHdpZHRoPSI4MCIgaGVpZ2h0PSIxMDAiIGZpbGw9IiNFNUU3RUIiLz48Y2lyY2xlIGN4PSI0MCIgY3k9IjM1IiByPSIxNSIgZmlsbD0iIzlDQTNDRiIvPjxlbGxpcHNlIGN4PSI0MCIgY3k9IjgwIiByeD0iMjUiIHJ5PSIyMCIgZmlsbD0iIzlDQTNDRiIvPjwvc3ZnPg==" alt="头像" onclick=\"document.getElementById('avatarUpload').click()\" title="点击上传照片" style="cursor:pointer;">';
+    html += `<img class="avatar" id="resumeAvatar" src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA4MCAxMDAiPjxyZWN0IHdpZHRoPSI4MCIgaGVpZ2h0PSIxMDAiIGZpbGw9IiNFNUU3RUIiLz48Y2lyY2xlIGN4PSI0MCIgY3k9IjM1IiByPSIxNSIgZmlsbD0iIzlDQTNDRiIvPjxlbGxpcHNlIGN4PSI0MCIgY3k9IjgwIiByeD0iMjUiIHJ5PSIyMCIgZmlsbD0iIzlDQTNDRiIvPjwvc3ZnPg==" alt="头像" onclick=\"document.getElementById('avatarUpload').click()\" title="点击上传照片" style="cursor:pointer;">`;
     html += '<input type="file" id="avatarUpload" accept="image/*" style="display:none" onchange="handleAvatarUpload(this)">';
     html += '<div class="header-text">';
     if (sections.header) {
