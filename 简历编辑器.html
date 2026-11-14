@@ -2497,6 +2497,9 @@
           afterDate = false;
           descBuf.push(line.replace(/^[•·\u2022]\s*/, ''));
         } else if (lineHasDate) {
+          // 若当前条目头已含日期行，说明本行行是新条目的完整头（名称+日期同行），先 flush
+          const headerHasDate = headerBuf.some(h => hasDate(h));
+          if (headerHasDate) flush();
           inDesc = false;
           afterDate = true;
           headerBuf.push(line);
