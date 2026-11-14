@@ -2411,11 +2411,11 @@
     }
 
     // 把板块文本拆成 {header, desc} 条目
-    // 规则：
-    //   含日期的行 → 经历头的一部分（公司名和日期可能分行，需合并）
+    // 规则（核心：用下一行是否含日期来判断当前行是不是新经历头）：
+    //   含日期的行 → 经历头的一部分（公司名和日期可能分行）
     //   以 ·/• 开头的行 → 新描述 bullet
-    //   短行(<30字)且无句末标点、非学历词 → 新经历头（flush 当前条目）
-    //   其余 → 上一条描述的续行
+    //   短行且下一行含日期 → 新经历头（flush 当前条目）
+    //   其余 → 上一条描述的续行或详情行
     const DATE_RE = /(\d{4}[\.\-/]\d{1,2}\s*[\-–至]\s*(?:\d{4}[\.\-/]?\d{0,2}|至今|现在))/g;
     const DEGREE_WORDS = ['博士','硕士','本科','大专','专科','MBA','在读','学位'];
     function parseEntries(text) {
@@ -2435,36 +2435,36 @@
         inDesc = false;
       };
 
-      for (const line of lines) {
-        const hasDate = DATE_RE.test(line);
-        DATE_RE.lastIndex = 0;
+      const hasDate = (s) => { const m = DATE_RE.test(s); DATE_RE.lastIndex = 0; return m; };
+
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        const next = lines[i + 1] || '';
+        const lineHasDate = hasDate(line);
+        const nextHasDate = hasDate(next);
         const isBullet = /^[•·\u2022]/.test(line);
         const isDegree = DEGREE_WORDS.some(d => line.includes(d));
-        const looksLikeNewHeader = line.length < 30 && !/[：:。；;！？!?]/.test(line) && !line.includes('http') && !isDegree;
+        // 新经历头判断：短行 + 下一行有日期（公司/项目名后面紧跟日期行）
+        const isNewHeader = line.length < 25 && nextHasDate && !isDegree && !line.includes('http') && !/^[•·\u2022]/.test(line);
 
         if (isBullet) {
           inDesc = true;
           descBuf.push(line.replace(/^[•·\u2022]\s*/, ''));
-        } else if (hasDate) {
+        } else if (lineHasDate) {
           inDesc = false;
           headerBuf.push(line);
+        } else if (isNewHeader) {
+          flush();
+          headerBuf.push(line);
+          inDesc = false;
         } else if (inDesc) {
-          if (looksLikeNewHeader) {
-            flush();
-            headerBuf.push(line);
-          } else if (descBuf.length) {
+          if (descBuf.length) {
             descBuf[descBuf.length - 1] += ' ' + line;
           } else {
             descBuf.push(line);
           }
         } else {
-          const headerHasDate = headerBuf.some(h => { const m = DATE_RE.test(h); DATE_RE.lastIndex = 0; return m; });
-          if (headerHasDate && looksLikeNewHeader) {
-            flush();
-            headerBuf.push(line);
-          } else {
-            headerBuf.push(line);
-          }
+          headerBuf.push(line);
         }
       }
       flush();
