@@ -1633,6 +1633,15 @@
   function closeJD() { document.getElementById('jdModal').classList.remove('active'); }
 
   // ------- 文件解析 -------
+  // 板块关键词（全链路统一，避免三处列表漂移）
+  const SECTION_MARKERS = [
+    { key: 'education',  pats: ['教育背景','教育经历','学历','EDUCATION','Education'] },
+    { key: 'internship', pats: ['实习经历','实习经验','工作经历','工作经验','INTERNSHIP','Internship','EXPERIENCE','Experience','WORK EXPERIENCE','Work Experience'] },
+    { key: 'projects',   pats: ['项目经历','项目经验','PROJECTS','Projects','PROJECT','Project'] },
+    { key: 'skills',     pats: ['技能与证书','专业技能','技能','证书','SKILLS','Skills','CERTIFICATE','Certificate','Certificates'] },
+  ];
+  const ALL_MARKER_WORDS = SECTION_MARKERS.flatMap(m => m.pats);
+
   async function parseFile(file) {
     const name = file.name.toLowerCase();
     const buf = await file.arrayBuffer();
@@ -1643,42 +1652,82 @@
         for (let i = 1; i <= doc.numPages; i++) {
           const page = await doc.getPage(i);
           const items = (await page.getTextContent()).items;
-          // 按 Y(降序，PDF 坐标向上为正) 再 X(升序) 排序，保证阅读顺序
-          const sorted = items.slice().sort((a, b) => {
-            const ay = a.transform[5], by = b.transform[5];
-            const ax = a.transform[4], bx = b.transform[4];
-            // Y 差小于 3 视为同一行，按 X 排；否则按 Y 降序
-            if (Math.abs(ay - by) < 3) return ax - bx;
-            return by - ay;
-          });
-          // 同一行内用空格拼接，不同行用换行
-          let line = '', lastY = null;
-          for (const it of sorted) {
-            if (lastY !== null && Math.abs(it.transform[5] - lastY) >= 3) {
-              text += line.trim() + '\n';
-              line = '';
+
+          // ---- 双栏检测 ----
+          // 统计所有 item 的起始 X，若存在明显空白间隔（gutter），判定为双栏
+          const xs = items.map(it => it.transform[4]).sort((a, b) => a - b);
+          let gutter = null;
+          if (xs.length > 20) {
+            const pageWidth = page.getViewport({ scale: 1 }).width;
+            // 在页面宽度 35%~65% 区间寻找最大空白间隔
+            let maxGap = 0, gapAt = null;
+            for (let k = 1; k < xs.length; k++) {
+              const gap = xs[k] - xs[k - 1];
+              const midX = (xs[k] + xs[k - 1]) / 2;
+              if (midX > pageWidth * 0.3 && midX < pageWidth * 0.7 && gap > maxGap) {
+                maxGap = gap; gapAt = midX;
+              }
             }
-            line += it.str + ' ';
-            lastY = it.transform[5];
+            // 最大间隔需显著大于正常字符间距（> 页面宽度 8%）
+            if (maxGap > pageWidth * 0.08) gutter = gapAt;
           }
-          text += line.trim() + '\n';
+
+          // 按栏分组：左栏 items、右栏 items
+          const leftItems = gutter === null ? items : items.filter(it => it.transform[4] < gutter);
+          const rightItems = gutter === null ? [] : items.filter(it => it.transform[4] >= gutter);
+
+          // 把一栏 items 转成行文本
+          const columnToText = (colItems) => {
+            if (!colItems.length) return '';
+            // 动态行距容忍：取 item 高度的中位数作为行高基准
+            const heights = colItems.map(it => it.height || 0).filter(h => h > 0);
+            const medianH = heights.length ? [...heights].sort((a, b) => a - b)[Math.floor(heights.length / 2)] : 3;
+            const tol = Math.max(2, medianH * 0.5);
+            // 词间距阈值：空格字符宽度约为字号的 0.2~0.3 倍
+            const spaceGap = Math.max(1, medianH * 0.2);
+            const sorted = colItems.slice().sort((a, b) => {
+              const ay = a.transform[5], by = b.transform[5];
+              const ax = a.transform[4], bx = b.transform[4];
+              if (Math.abs(ay - by) < tol) return ax - bx;
+              return by - ay;
+            });
+            let out = '', line = '', lastY = null, lastEndX = null;
+            for (const it of sorted) {
+              const y = it.transform[5], x = it.transform[4];
+              if (lastY !== null && Math.abs(y - lastY) >= tol) {
+                out += line.trimEnd() + '\n';
+                line = '';
+                lastEndX = null;
+              }
+              // 智能加空格：当前 item 与上一 item 的水平间距 > 词间距阈值时才加空格
+              // （中文逐字 item 间距≈0 不加空格；英文单词间有空格宽度则加）
+              if (lastEndX !== null && x - lastEndX > spaceGap) {
+                line += ' ';
+              }
+              line += it.str;
+              lastEndX = x + (it.width || 0);
+              lastY = y;
+            }
+            out += line.trimEnd() + '\n';
+            return out;
+          };
+
+          // 左栏在前、右栏在后（简历通常左栏是联系/技能，右栏是正文；即使相反也比分栏混排好）
+          text += columnToText(leftItems);
+          if (rightItems.length) text += columnToText(rightItems);
         }
-        // 给板块关键词前后插换行：用单次正则（最长优先 + 英文单词边界），避免短词匹配进长词
-        // 如 PROJECT 不应匹配进 PROJECTS，证书不应匹配进"语言与证书"
-        const sectionMarkers = [
-          '教育背景', '教育经历', '学历', 'EDUCATION', 'Education',
-          '实习经历', '实习经验', '工作经历', '工作经验', 'INTERNSHIP', 'Internship', 'EXPERIENCE', 'Experience', 'WORK EXPERIENCE', 'Work Experience',
-          '项目经历', '项目经验', 'PROJECTS', 'Projects', 'PROJECT', 'Project',
-          '技能与证书', '专业技能', '技能', '证书', 'SKILLS', 'Skills', 'CERTIFICATE', 'Certificate', 'Certificates'
-        ];
-        sectionMarkers.sort((a, b) => b.length - a.length);
+
+        // 给板块关键词前后插换行
+        // - 英文用单词边界 \b
+        // - 中文用「非中文字符边界」：标记前后不能是中文字符，避免"技能"匹配进"专业技能/熟练技能工具"
         const escapeReg = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        // 英文用单词边界；中文仅插入长度>=4的（"技能""证书"过短易误伤内容行，检测留给 splitResumeSections）
-        const alt = sectionMarkers.map(m => {
+        // 最长优先，避免 PROJECT 匹配进 PROJECTS
+        const sortedMarkers = [...ALL_MARKER_WORDS].sort((a, b) => b.length - a.length);
+        const alt = sortedMarkers.map(m => {
           if (/^[\x00-\x7F]+$/.test(m)) return '\\b' + escapeReg(m) + '\\b';
-          return m.length >= 4 ? escapeReg(m) : null;
-        }).filter(Boolean).join('|');
-        let result = text.trim();
+          return '(?<![\\u4e00-\\u9fa5])' + escapeReg(m) + '(?![\\u4e00-\\u9fa5])';
+        }).join('|');
+        let result = text;
         result = result.replace(new RegExp('[ \\t]*(' + alt + ')[ \\t]*', 'gi'), '\n$1\n');
         // 合并多余空行
         result = result.replace(/\n{3,}/g, '\n\n');
@@ -2199,86 +2248,82 @@
     document.getElementById('uploadLoading').style.display = 'none';
   });
 
+  // 判断一行是否是「板块标记行」——核心：该行主要由板块关键词构成
+  // 规则：移除所有标记词和分隔符后，
+  //   - 剩余为空或 <=1 字符（如 "教育背景 EDUCATION"→空、"1. 教育背景"→"1"）
+  //   - 或行很短(<15字) 且 剩余部分是常见修饰词（核心/专业/个人…，如 "核心技能"→"核心"）
+  // 内容行如 "获得技能证书"→剩"获得"(动词)、"熟悉技能与工具"→剩"熟悉与工具"，均不会误判
+  const HEADER_MODIFIERS = ['核心','专业','个人','主要','基本','相关','通用','其他','各类','多项','特长','概述','简介'];
+  function isSectionMarkerLine(line) {
+    if (!line) return false;
+    const orig = line.trim();
+    let t = orig;
+    for (const kw of ALL_MARKER_WORDS) {
+      t = t.replace(new RegExp(kw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'), '');
+    }
+    t = t.replace(/[\s·•|｜\-–—:：、,，.。（）()【】\[\]《》<>]/g, '');
+    if (t.length <= 1) return true;
+    if (orig.length < 15 && HEADER_MODIFIERS.includes(t)) return true;
+    return false;
+  }
+
   // 智能分板块：把简历文本按关键词拆成各板块
   function splitResumeSections(text) {
-    // 板块识别关键词（英文大小写不敏感）
-    const markers = [
-      { key: 'education',  pats: ['教育背景','教育经历','学历','EDUCATION','Education'] },
-      { key: 'internship', pats: ['实习经历','实习经验','工作经历','工作经验','INTERNSHIP','Internship','EXPERIENCE','Experience','WORK EXPERIENCE','Work Experience'] },
-      { key: 'projects',   pats: ['项目经历','项目经验','PROJECTS','Projects','PROJECT','Project'] },
-      { key: 'skills',     pats: ['技能与证书','专业技能','技能','证书','SKILLS','Skills','CERTIFICATE','Certificate','Certificates'] },
-    ];
-    // 大小写不敏感包含检测
     const hasKw = (line, kw) => {
       if (/[\u4e00-\u9fa5]/.test(kw)) return line.includes(kw);
       return line.toLowerCase().includes(kw.toLowerCase());
     };
 
-    // ========== 预处理：合并碎片行 ==========
-    // 判断一行是否包含板块关键词（用于避免把标记行和内容行合并）
-    const isMarkerLine = (line) => {
-      for (const m of markers) {
-        for (const p of m.pats) { if (hasKw(line, p)) return true; }
-      }
-      return false;
-    };
     let rawLines = text.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+
+    // 预处理：仅合并「两个短行拼起来恰好是标记」的情况（如 "教育" + "背景"）
     let lines = [];
     let i = 0;
     while (i < rawLines.length) {
-      let line = rawLines[i];
-      if (line.length < 15 && i + 1 < rawLines.length && rawLines[i+1].length < 15) {
-        const next = rawLines[i+1];
-        const lineIsMarker = isMarkerLine(line);
-        const nextIsMarker = isMarkerLine(next);
-        // 只在以下情况合并：
-        //   1) 两行都是标记行（如 "教育背景" + "EDUCATION"）
-        //   2) 两行都不是标记行，但合并后命中标记词（如 "教育" + "背景"）
-        // 禁止：一个标记行 + 一个内容行合并（会把板块标题污染进内容）
-        if ((lineIsMarker && nextIsMarker) || (!lineIsMarker && !nextIsMarker)) {
-          const merged = line + next;
-          let hit = false;
-          for (const m of markers) {
-            for (const p of m.pats) { if (hasKw(merged, p)) { hit = true; break; } }
-            if (hit) break;
-          }
-          if (hit) { lines.push(merged); i += 2; continue; }
+      if (i + 1 < rawLines.length) {
+        const merged = rawLines[i] + rawLines[i + 1];
+        if (isSectionMarkerLine(merged) && !isSectionMarkerLine(rawLines[i]) && !isSectionMarkerLine(rawLines[i + 1])) {
+          lines.push(merged);
+          i += 2;
+          continue;
         }
       }
-      lines.push(line);
+      lines.push(rawLines[i]);
       i++;
     }
 
     const sections = { header: [], education: [], internship: [], projects: [], skills: [] };
 
-    // 判断一行是否是 URL 片段（PDF 常把长 URL 拆成多行，中间的单词如 experience 会误命中板块关键词）
+    // 判断一行是否是 URL 片段（PDF 常把长 URL 拆成多行，中间单词如 experience 会误命中标记）
     const isUrlFragment = (line, prev, next) => {
       if (!line) return false;
       if (/^https?:\/\//i.test(line)) return true;
-      // 含域名特征的片段：xxx.yyy 且无空格
       if (!line.includes(' ') && /\.[a-z]{2,}/i.test(line)) return true;
-      // 无空格且以 - 开头/结尾（被断行的 URL 片段）
       if (!line.includes(' ') && (line.startsWith('-') || line.endsWith('-'))) return true;
-      // 无空格且上下行都是 URL 片段 → 当前行也是 URL 的一部分
       const prevIsUrl = prev && (/^https?:\/\//i.test(prev) || (!prev.includes(' ') && /\.[a-z]{2,}/i.test(prev)) || (!prev.includes(' ') && prev.endsWith('-')));
       const nextIsUrl = next && (!next.includes(' ') && (next.startsWith('-') || /\.[a-z]{2,}/i.test(next)));
       if (!line.includes(' ') && (prevIsUrl || nextIsUrl)) return true;
       return false;
     };
 
-    // 头部：取到第一个板块关键词出现为止
+    // 取某行命中的板块 key（仅当该行是标记行时返回，否则 null）
+    const matchSection = (line) => {
+      for (const m of SECTION_MARKERS) {
+        for (const p of m.pats) {
+          if (hasKw(line, p)) return m.key;
+        }
+      }
+      return null;
+    };
+
+    // 头部：取到第一个板块标记行为止
     let headerEnd = 0;
     for (let idx = 0; idx < lines.length; idx++) {
-      const l = lines[idx].trim();
-      const prev = idx > 0 ? lines[idx - 1].trim() : '';
-      const next = idx + 1 < lines.length ? lines[idx + 1].trim() : '';
+      const l = lines[idx];
+      const prev = idx > 0 ? lines[idx - 1] : '';
+      const next = idx + 1 < lines.length ? lines[idx + 1] : '';
       if (isUrlFragment(l, prev, next)) { sections.header.push(l); headerEnd = idx + 1; continue; }
-      let isMarker = false;
-      for (const m of markers) {
-        for (const p of m.pats) { if (hasKw(l, p)) { isMarker = true; break; } }
-        if (isMarker) break;
-      }
-      if (isMarker) { headerEnd = idx; break; }
+      if (isSectionMarkerLine(l) && matchSection(l)) { headerEnd = idx; break; }
       sections.header.push(l);
       headerEnd = idx + 1;
     }
@@ -2287,21 +2332,15 @@
     let currentKey = null;
     for (let idx = headerEnd; idx < lines.length; idx++) {
       const l = lines[idx];
-      const prev = idx > 0 ? lines[idx - 1].trim() : '';
-      const next = idx + 1 < lines.length ? lines[idx + 1].trim() : '';
-      // URL 片段不作为板块标记
+      const prev = idx > 0 ? lines[idx - 1] : '';
+      const next = idx + 1 < lines.length ? lines[idx + 1] : '';
       if (!isUrlFragment(l, prev, next)) {
-        let matched = null;
-        for (const m of markers) {
-          for (const p of m.pats) { if (hasKw(l, p)) { matched = m.key; break; } }
-          if (matched) break;
-        }
+        const matched = isSectionMarkerLine(l) ? matchSection(l) : null;
         if (matched) currentKey = matched;
       }
       if (currentKey) sections[currentKey].push(l);
     }
 
-    // 去空行收尾
     Object.keys(sections).forEach(k => {
       sections[k] = sections[k].filter(s => s.length > 0).join('\n').trim();
     });
@@ -2417,7 +2456,8 @@
       const extraDesc = entry.desc || '';
       const date = parseDate(line);
       const rest = date ? line.replace(date, '').trim() : line;
-      const parts = rest.split(/\s+/).filter(Boolean);
+      // 统一分隔符后按空白拆 token（与 buildEduItem 对齐）
+      const parts = rest.replace(/[\/｜|]/g, ' ').split(/\s+/).filter(Boolean);
       let company = parts[0] || rest, role = '', inlineDesc = '';
       if (parts.length >= 2) {
         if (type === 'project') {
@@ -2454,80 +2494,84 @@
     }
 
     // 把板块文本拆成 {header, desc} 条目
-    // 规则（核心：用下一行是否含日期来判断当前行是不是新经历头）：
-    //   含日期的行 → 经历头的一部分（公司名和日期可能分行）
-    //   以 ·/• 开头的行 → 新描述 bullet
-    //   短行且下一行含日期 → 新经历头（flush 当前条目）
-    //   其余 → 上一条描述的续行或详情行
+    // 核心思路：以「日期行」为锚点切分条目（简历中每条经历/教育/项目几乎都带日期）
+    //   - 每个日期行 + 其前后的「标题行」（短、无标点、非 bullet）构成该条目的 header
+    //   - 两个条目 header 之间的其余行构成前一个条目的 desc
+    // 标题行判定：短行(<35字) 且 不含句读标点(，,。.；;) 且 非 bullet
     const DATE_RE = /(\d{4}[\.\-/]\d{1,2}\s*[\-–至]\s*(?:\d{4}[\.\-/]?\d{0,2}|至今|现在))/g;
     const DEGREE_WORDS = ['博士','硕士','本科','大专','专科','MBA','在读','学位'];
     function parseEntries(text) {
       if (!text) return [];
       const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
-      const entries = [];
-      let headerBuf = [];
-      let descBuf = [];
-      let inDesc = false;
-      let afterDate = false; // 标记上一行是否是日期行（用于判断后续长文本是描述还是标题）
-
-      const flush = () => {
-        if (headerBuf.length || descBuf.length) {
-          entries.push({ header: headerBuf.join(' '), desc: descBuf.join('\n') });
-        }
-        headerBuf = [];
-        descBuf = [];
-        inDesc = false;
-        afterDate = false;
-      };
 
       const hasDate = (s) => { const m = DATE_RE.test(s); DATE_RE.lastIndex = 0; return m; };
+      const isBullet = (s) => /^[•·\u2022\-]\s/.test(s) || /^[•·\u2022]/.test(s);
+      // 标题行：短 + 无句读标点 + 非 bullet（公司/学校/项目名、职位、专业均符合）
+      const isHeaderLike = (s) => !isBullet(s) && s.length < 35 && !/[，,。.；;]/.test(s);
+      const stripBullet = (s) => s.replace(/^[•·\u2022\-]\s*/, '');
 
-      for (let i = 0; i < lines.length; i++) {
-        const line = lines[i];
-        const next = lines[i + 1] || '';
-        const lineHasDate = hasDate(line);
-        const nextHasDate = hasDate(next);
-        const isBullet = /^[•·\u2022]/.test(line);
-        const isDegree = DEGREE_WORDS.some(d => line.includes(d));
-        // 新经历头判断：短行 + 下一行有日期（公司/项目名后面紧跟日期行）
-        const isNewHeader = line.length < 25 && nextHasDate && !isDegree && !line.includes('http') && !/^[•·\u2022]/.test(line);
+      // 1. 找出所有日期行的索引
+      const dateIdxs = [];
+      lines.forEach((l, idx) => { if (hasDate(l)) dateIdxs.push(idx); });
 
-        if (isBullet) {
-          inDesc = true;
-          afterDate = false;
-          descBuf.push(line.replace(/^[•·\u2022]\s*/, ''));
-        } else if (lineHasDate) {
-          // 若当前条目头已含日期行，说明本行行是新条目的完整头（名称+日期同行），先 flush
-          const headerHasDate = headerBuf.some(h => hasDate(h));
-          if (headerHasDate) flush();
-          inDesc = false;
-          afterDate = true;
-          headerBuf.push(line);
-        } else if (isNewHeader) {
-          flush();
-          headerBuf.push(line);
-          inDesc = false;
-          afterDate = false;
-        } else if (isDegree) {
-          // 学位词（本科/硕士/博士等）属于经历头的一部分
-          headerBuf.push(line);
-          inDesc = false;
-        } else if (inDesc) {
-          if (descBuf.length) {
-            descBuf[descBuf.length - 1] += ' ' + line;
+      const entries = [];
+
+      if (dateIdxs.length === 0) {
+        // 无日期兜底：按 bullet 分组，每个 bullet 块前的连续标题行作为一个条目
+        let curHeader = [], curDesc = [];
+        for (const l of lines) {
+          if (isBullet(l)) {
+            curDesc.push(stripBullet(l));
+          } else if (curDesc.length === 0 && isHeaderLike(l)) {
+            curHeader.push(l);
           } else {
-            descBuf.push(line);
+            if (curHeader.length || curDesc.length) {
+              entries.push({ header: curHeader.join(' '), desc: curDesc.join('\n') });
+            }
+            curHeader = [l]; curDesc = [];
           }
-        } else if (afterDate && line.length > 20) {
-          // 日期行后紧跟的长文本（项目副标题、作品链接、URL 等）→ 归入描述
-          inDesc = true;
-          afterDate = false;
-          descBuf.push(line);
-        } else {
-          headerBuf.push(line);
         }
+        if (curHeader.length || curDesc.length) entries.push({ header: curHeader.join(' '), desc: curDesc.join('\n') });
+        return entries;
       }
-      flush();
+
+      // 2. 以日期行为锚点构造条目
+      for (let k = 0; k < dateIdxs.length; k++) {
+        const di = dateIdxs[k];
+        const nextDi = k + 1 < dateIdxs.length ? dateIdxs[k + 1] : lines.length;
+
+        // header 组成：向前收集最多 2 个标题行 + 日期行 + 向后收集标题行
+        const headerLines = [];
+        // 向前：从 di-1 往回，最多 2 行，必须是标题行（不能是 bullet/日期/长句）
+        for (let j = di - 1; j >= Math.max(di - 2, 0); j--) {
+          if (isBullet(lines[j]) || hasDate(lines[j])) break;
+          if (!isHeaderLike(lines[j])) break;
+          headerLines.unshift(lines[j]);
+        }
+        headerLines.push(lines[di]);
+        // 向后：日期行之后的标题行（职位/专业），直到碰到 bullet/日期/长句
+        let headerEnd = di + 1;
+        for (let j = di + 1; j < nextDi; j++) {
+          if (isBullet(lines[j]) || hasDate(lines[j]) || !isHeaderLike(lines[j])) break;
+          headerLines.push(lines[j]);
+          headerEnd = j + 1;
+        }
+
+        // desc：从 headerEnd 到下一条目开始前
+        // 下一条目的 header 会向前收集 2 行，所以本条目 desc 截止到 nextDi - 2（不含）
+        const descEnd = nextDi;
+        let descLines = lines.slice(headerEnd, descEnd);
+        // 去掉末尾尾随的标题行（那是下一条条目的名称，会被下一轮向前收集）
+        while (descLines.length && isHeaderLike(descLines[descLines.length - 1]) && !hasDate(descLines[descLines.length - 1])) {
+          descLines.pop();
+        }
+        const desc = descLines.map(l => isBullet(l) ? stripBullet(l) : l).join('\n');
+
+        entries.push({ header: headerLines.join(' '), desc });
+      }
+
+      // 3. 处理日期行之前的前置内容（如板块概述行）—— 并入第一个条目的 desc 开头
+      // （通常无此情况，若有则附加）
       return entries;
     }
 
@@ -2592,8 +2636,7 @@
       } else {
         // 智能分板块：客户端规则解析为主（确定性、不缺字段），AI 仅补全缺失板块
         const ruleSections = splitResumeSections(text);
-        // 清理每个板块里残留的关键词行（支持"教育背景 EDUCATION"这种多关键词同行）
-        const allKws = ['教育背景','教育经历','学历','EDUCATION','Education','实习经历','实习经验','工作经历','工作经验','INTERNSHIP','Internship','EXPERIENCE','Experience','WORK EXPERIENCE','Work Experience','项目经历','项目经验','PROJECTS','Projects','PROJECT','Project','技能与证书','专业技能','技能','证书','SKILLS','Skills','CERTIFICATE','Certificate','Certificates'];
+        // 清理每个板块里残留的标记行
         const isUrlFrag = (l) => {
           if (!l) return false;
           l = l.trim();
@@ -2603,26 +2646,20 @@
           return false;
         };
         const cleanSection = (s) => {
-          // 1. 先合并被 PDF 拆成多行的 URL 片段（如 https://xxx- / experience / -yyy.com）
+          // 1. 先合并被 PDF 拆成多行的 URL 片段
           const rawLines = s.split('\n');
           const merged = [];
           for (const l of rawLines) {
             const prevIsUrl = merged.length && isUrlFrag(merged[merged.length - 1]);
             const curNoSpace = l.trim().length > 0 && !l.trim().includes(' ');
-            // 上一行是 URL 片段且当前行无空格 → 视为 URL 续行，合并
             if (prevIsUrl && curNoSpace) {
               merged[merged.length - 1] = merged[merged.length - 1] + l.trim();
             } else {
               merged.push(l);
             }
           }
-          // 2. 只删除纯标记行（移除标记词后几乎无内容），内容行保持原样不修改
-          return merged.filter(l => {
-            let t = l.trim();
-            for (const kw of allKws) t = t.replace(new RegExp(kw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'), '');
-            t = t.replace(/[\s·•|｜\-–—:：]/g, '');
-            return t.length > 1;
-          }).join('\n').trim();
+          // 2. 删除纯标记行（用统一的 isSectionMarkerLine 判断），内容行保持原样
+          return merged.filter(l => !isSectionMarkerLine(l)).join('\n').trim();
         };
         const sections = {
           header: ruleSections.header,
