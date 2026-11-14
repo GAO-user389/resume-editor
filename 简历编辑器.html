@@ -1645,7 +1645,7 @@
           // 紧凑拼接（PDF 文本块按坐标顺序返回，同一行内容是相邻的 items）
           text += (await page.getTextContent()).items.map(it => it.str).join(' ') + '\n';
         }
-        // 给板块关键词前后插换行（与 splitResumeSections 的 pats 完全一致）
+        // 给板块关键词前后插换行：消耗关键词周围的空白，统一换成换行
         const sectionMarkers = [
           '教育背景', '教育经历', 'EDUCATION',
           '实习经历', '工作经历', 'INTERNSHIP', 'EXPERIENCE',
@@ -1653,11 +1653,13 @@
           '技能与证书', '技能', 'SKILLS', 'CERTIFICATE', '证书'
         ];
         sectionMarkers.sort((a, b) => b.length - a.length);
+        const escapeReg = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
         let result = text.trim();
         for (const kw of sectionMarkers) {
-          result = result.replace(new RegExp('(\\S)(' + kw + ')', 'g'), '$1\n$2');
-          result = result.replace(new RegExp('(' + kw + ')(\\S)', 'g'), '$1\n$2');
+          result = result.replace(new RegExp('\\s*(' + escapeReg(kw) + ')\\s*', 'g'), '\n$1\n');
         }
+        // 合并多余空行
+        result = result.replace(/\n{3,}/g, '\n\n');
         return result.trim();
       } else if (name.endsWith('.docx') || name.endsWith('.doc')) {
         const res = await window['mammoth'].extractRawText({ arrayBuffer: buf });
@@ -2274,23 +2276,25 @@
       console.log('[applySections] email:', email, 'match:', JSON.stringify(emailMatch?.[0]?.substring(0,30)));
       // 求职意向: "求职意向:xxx" "目标岗位:xxx" "意向:xxx"
       const intentMatch = raw.match(/(?:求职意向|目标岗位|求职目标|意向)\s*[:：]\s*([^\n\r]+)/i);
-      if (intentMatch) intent = intentMatch[1].trim();// 名字: 找第一个"短行"（不是手机、不是邮箱、不是带冒号的标签行、长度 2-8 字）
-      const headerLines = raw.split('\n').map(l => l.trim()).filter(Boolean);
+      if (intentMatch) intent = intentMatch[1].trim();
+      // 名字: 先把 phone/email/intent/标签 从原文中移除，再从剩余文本里找 2-8 字纯中文
+      let nameCleaned = raw
+        .replace(/(?:手机|电话|Tel|Phone|联系电话|📱)\s*[:：]?\s*[1][3-9]\d{9}/gi, ' ')
+        .replace(/[1][3-9]\d{9}/g, ' ')
+        .replace(/[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/g, ' ')
+        .replace(/(?:求职意向|目标岗位|求职目标|意向)\s*[:：]\s*[^\n\r]*/gi, ' ')
+        .replace(/(?:手机|电话|Tel|Phone|邮箱|Email|联系|📱|✉)\s*[:：]?\s*/gi, ' ');
+      const headerLines = nameCleaned.split('\n').map(l => l.trim()).filter(Boolean);
       for (const line of headerLines) {
-        if (line === phone || line.includes(phone)) continue;
-        if (line.includes(email)) continue;
-        if (/^(手机|电话|Tel|Phone|邮箱|Email|求职|意向|目标|联系|📱|✉)/i.test(line)) continue;
-        // 尝试提取可能是单独的名字
-        const cleaned = line.replace(/[：:].*$/, '').trim();
-        if (cleaned.length >= 2 && cleaned.length <= 8 && /^[\u4e00-\u9fa5·•\s]+$/.test(cleaned)) {
-          name = cleaned; break;
-        }
-        // fallback: 第一行
-        if (!name) name = line;
+        // 整行就是名字（2-8 字纯中文，可含 ·•）
+        const full = line.match(/^([\u4e00-\u9fa5·•]{2,8})$/);
+        if (full) { name = full[1]; break; }
+        // 行首是名字，后面跟其他内容
+        const start = line.match(/^([\u4e00-\u9fa5·•]{2,8})(?:\s|$)/);
+        if (start) { name = start[1]; break; }
       }
       
       // 写入 DOM
-      const resume = document.getElementById('resume');
       const nameEl = resume.querySelector('.resume-header .name');
       const intentEl = resume.querySelector('.resume-header .intent-pill');
       const contactBar = resume.querySelector('.resume-header .contact-bar');
@@ -2322,37 +2326,29 @@
     function buildEduItem(line) {
       const date = parseDate(line);
       const rest = date ? line.replace(date, '').trim() : line;
-      // 先按 / 或 ｜ 或 | 拆分（PDF 常见分隔符），再 trim 每个部分
-      let parts = rest.split(/[\/｜|]/).map(p => p.trim()).filter(p => p.length > 0);
-      // 如果只有一个元素或有元素里还有空格，再按空格细分
-      const flatParts = [];
-      for (const p of parts) {
-        if (p.includes(' ') && !p.includes('大学') && !p.includes('学院')) {
-          flatParts.push(...p.split(/\s+/).filter(Boolean));
-        } else {
-          flatParts.push(p);
-        }
+      // 统一把 / ｜ | 换成空格，再按空白拆 token
+      const tokens = rest.replace(/[\/｜|]/g, ' ').split(/\s+/).filter(Boolean);
+      const knownDegrees = ['博士','硕士','本科','大专','专科','MBA','在读'];
+      let degreeIdx = -1;
+      for (let i = tokens.length - 1; i >= 0; i--) {
+        if (knownDegrees.some(d => tokens[i].includes(d))) { degreeIdx = i; break; }
       }
-      parts = flatParts;
-      
-      let school = rest, major = '', degree = '';
-      if (parts.length >= 3) {
-        const knownDegrees = ['博士','硕士','本科','大专','专科','MBA','在读'];
-        let degreeIdx = -1;
-        for (let i = parts.length - 1; i >= 0; i--) {
-          if (knownDegrees.some(d => parts[i].includes(d))) { degreeIdx = i; break; }
+      let school = '', major = '', degree = '';
+      if (degreeIdx >= 0) {
+        degree = tokens[degreeIdx];
+        // 学校名：从开头到第一个含"大学/学院/学校"的 token（含）
+        let schoolEnd = 0;
+        for (let i = 0; i < degreeIdx; i++) {
+          if (/大学|学院|学校/.test(tokens[i])) { schoolEnd = i + 1; break; }
         }
-        if (degreeIdx >= 0) {
-          school = parts.slice(0, degreeIdx - 1).join(' ');
-          major = parts.slice(degreeIdx - 1, degreeIdx).join(' ');
-          degree = parts[degreeIdx];
-        } else {
-          school = parts[0];
-          major = parts.slice(1).join(' ');
-        }
-      } else if (parts.length === 2) {
-        school = parts[0];
-        major = parts[1];
+        if (schoolEnd === 0) schoolEnd = 1; // 兜底：至少第一个 token 算学校
+        school = tokens.slice(0, schoolEnd).join(' ');
+        major = tokens.slice(schoolEnd, degreeIdx).join(' ');
+      } else if (tokens.length >= 2) {
+        school = tokens[0];
+        major = tokens.slice(1).join(' ');
+      } else {
+        school = rest;
       }
       const div = document.createElement('div');
       div.className = 'edu-item';
@@ -2360,22 +2356,28 @@
       return div;
     }
 
-    function buildExpItem(line) {
+    function buildExpItem(line, type) {
+      type = type || 'internship';
       const date = parseDate(line);
       const rest = date ? line.replace(date, '').trim() : line;
-      const parts = rest.split(/\s+/);
-      let company = rest, role = '';
+      const parts = rest.split(/\s+/).filter(Boolean);
+      let company = parts[0] || rest, role = '', desc = '';
       if (parts.length >= 2) {
-        let companyEnd = Math.min(2, parts.length - 1);
-        for (let i = 1; i < parts.length; i++) {
-          if (parts[i].length > 2) companyEnd = i + 1; else break;
+        if (type === 'project') {
+          // 项目：公司位放项目名，role 留空，其余全进 desc
+          desc = parts.slice(1).join(' ');
+        } else {
+          // 实习：公司名 + 职位，剩余进 desc
+          company = parts[0];
+          role = parts[1] || '';
+          desc = parts.slice(2).join(' ');
         }
-        company = parts.slice(0, companyEnd).join(' ');
-        role = parts.slice(companyEnd).join(' ');
       }
+      const headerHtml = '<div class="exp-header"><div><span class="company" contenteditable="false">' + h(company) + '</span>' + (role ? '<span class="role">｜' + h(role) + '</span>' : '') + '</div>' + (date ? '<div class="date" contenteditable="false">' + h(date) + '</div>' : '') + '</div>';
+      const descHtml = desc ? '<div class="exp-desc" contenteditable="false"><ul><li>' + h(desc) + '</li></ul></div>' : '<div class="exp-desc" contenteditable="false"><ul><li></li></ul></div>';
       const div = document.createElement('div');
       div.className = 'exp-item';
-      div.innerHTML = '<div class="exp-header"><div><span class="company" contenteditable="false">' + h(company) + '</span>' + (role ? '<span class="role">｜' + h(role) + '</span>' : '') + '</div>' + (date ? '<div class="date" contenteditable="false">' + h(date) + '</div>' : '') + '</div><div class="exp-desc" contenteditable="false"><ul><li>' + h(line) + '</li></ul></div>';
+      div.innerHTML = headerHtml + descHtml;
       return div;
     }
 
@@ -2389,11 +2391,28 @@
       return div;
     }
 
+    // 把板块文本拆成单条记录：先按 \n 拆，再按"日期边界"拆（AI 可能把多条塞一行）
+    const DATE_RE = /(\d{4}[\.\-/]\d{1,2}\s*[\-–至]\s*(?:\d{4}[\.\-/]?\d{0,2}|至今|现在))/g;
+    function splitEntries(text) {
+      if (!text) return [];
+      const byLine = text.split('\n');
+      const out = [];
+      for (const raw of byLine) {
+        const line = raw.trim();
+        if (!line) continue;
+        // 在每个日期前插入 \x00 分隔符，再拆分
+        const marked = line.replace(DATE_RE, '\x00$1');
+        const segs = marked.split('\x00').map(s => s.trim()).filter(s => s.length > 2);
+        out.push(...segs);
+      }
+      return out;
+    }
+
     // 遍历 4 个板块
     const sectionMap = [
       { titleKeywords: ['教育背景', 'EDUCATION', '教育经历'], data: sections.education, itemClass: 'edu-item', builder: buildEduItem },
-      { titleKeywords: ['实习经历', 'INTERNSHIP', '工作经历', 'EXPERIENCE'], data: sections.internship, itemClass: 'exp-item', builder: buildExpItem },
-      { titleKeywords: ['项目经历', 'PROJECTS', '项目经验'], data: sections.projects, itemClass: 'exp-item', builder: buildExpItem },
+      { titleKeywords: ['实习经历', 'INTERNSHIP', '工作经历', 'EXPERIENCE'], data: sections.internship, itemClass: 'exp-item', builder: (l) => buildExpItem(l, 'internship') },
+      { titleKeywords: ['项目经历', 'PROJECTS', '项目经验'], data: sections.projects, itemClass: 'exp-item', builder: (l) => buildExpItem(l, 'project') },
       { titleKeywords: ['技能', 'SKILLS', '证书'], data: sections.skills, itemClass: 'skill-cat', builder: buildSkillCat, useGrid: true },
     ];
 
@@ -2407,7 +2426,10 @@
       // 清空旧内容
       sectionEl.querySelectorAll('.edu-item, .exp-item, .skills-grid, .section-body').forEach(el => el.remove());
       
-      const lines2 = sk.data.split('\n').map(l => l.trim()).filter(l => l.length > 2);
+      // 技能按行拆；其余板块按 \n + 日期边界拆
+      const lines2 = sk.useGrid
+        ? sk.data.split('\n').map(l => l.trim()).filter(l => l.length > 2)
+        : splitEntries(sk.data);
       if (sk.useGrid) {
         const grid = document.createElement('div');
         grid.className = 'skills-grid';
