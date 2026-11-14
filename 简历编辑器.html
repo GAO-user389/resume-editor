@@ -2456,7 +2456,7 @@
     loadingDiv.style.display = 'flex';
     loadingDiv.style.flexDirection = 'column';
     loadingDiv.style.gap = '12px';
-    loadingDiv.innerHTML = '<span class="ai-loading"></span>AI 正在分析简历结构...';
+    loadingDiv.innerHTML = '<span class="ai-loading"></span>正在解析简历结构...';
     modal.querySelector('.jd-body').appendChild(loadingDiv);
 
     let ok = false;
@@ -2467,35 +2467,51 @@
         applySectionsToTemplate({ header: headerLines.join('\n'), education: '', internship: '', projects: '', skills: '' });
         ok = true;
       } else {
-        // 智能分板块：优先 AI 结构化
-        let aiSections = null;
-        try {
-          const res = await fetch(BACKEND_BASE_URL + '/api/resume/parse', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ text: text, fingerprint: DEVICE_FP }),
-          });
-          if (res.ok) {
-            const data = await res.json();
-            if (data.ok && data.sections) aiSections = data.sections;
-          }
-        } catch(e) { console.warn('AI 解析失败:', e.message); }
+        // 智能分板块：客户端规则解析为主（确定性、不缺字段），AI 仅补全缺失板块
+        const ruleSections = splitResumeSections(text);
+        // 清理每个板块里残留的关键词行（支持"教育背景 EDUCATION"这种多关键词同行）
+        const allKws = ['教育背景','教育经历','EDUCATION','实习经历','工作经历','INTERNSHIP','EXPERIENCE','项目经历','项目经验','PROJECTS','技能与证书','技能','SKILLS','CERTIFICATE','证书'];
+        const cleanSection = (s) => s.split('\n').filter(l => {
+          let t = l.trim();
+          // 移除所有关键词，看剩下的是否只有分隔符/空白
+          for (const kw of allKws) t = t.split(kw).join('');
+          t = t.replace(/[\s·•|｜\-–—:：]/g, '');
+          return t.length > 0;
+        }).join('\n').trim();
+        const sections = {
+          header: ruleSections.header,
+          education: cleanSection(ruleSections.education),
+          internship: cleanSection(ruleSections.internship),
+          projects: cleanSection(ruleSections.projects),
+          skills: cleanSection(ruleSections.skills),
+        };
 
-        if (aiSections) {
-          applySectionsToTemplate(aiSections);
-          ok = true;
-        } else {
-          // 降级：把全文塞到第一个 section
-          const allSecs = resume.querySelectorAll('#resume .section');
-          allSecs.forEach(s => s.querySelectorAll('.edu-item, .exp-item, .skills-grid').forEach(el => el.remove()));
-          if (allSecs[0]) {
-            const body = document.createElement('div');
-            body.className = 'section-body';
-            body.style.whiteSpace = 'pre-wrap';
-            body.textContent = text;
-            allSecs[0].appendChild(body);
-          }
-          ok = true;
+        // 用规则解析结果填入
+        applySectionsToTemplate(sections);
+        ok = true;
+
+        // 可选：如果规则解析缺板块，用 AI 补全（不阻塞、不覆盖已有内容）
+        const missing = ['education','internship','projects','skills'].filter(k => !sections[k]);
+        if (missing.length > 0) {
+          try {
+            const res = await fetch(BACKEND_BASE_URL + '/api/resume/parse', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ text: text, fingerprint: DEVICE_FP }),
+            });
+            if (res.ok) {
+              const data = await res.json();
+              if (data.ok && data.sections) {
+                // 只补全缺失的板块
+                for (const k of missing) {
+                  if (data.sections[k]) {
+                    sections[k] = data.sections[k];
+                  }
+                }
+                applySectionsToTemplate(sections);
+              }
+            }
+          } catch(e) { console.warn('AI 补全失败:', e.message); }
         }
       }
     } catch(e) {
