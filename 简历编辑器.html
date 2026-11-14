@@ -2478,14 +2478,19 @@
       });
       if (res.ok) {
         userState = await res.json();
-        updateQuotaDisplay();
-        checkMyTickets();  // 检查是否有管理员回复（显示角标）
-        // 每 30 秒静默轮询一次（检查新回复）
-        setInterval(checkMyTickets, 30000);
+      } else {
+        console.warn('identify 返回非 ok:', res.status);
       }
     } catch (e) {
-      console.warn('设备识别失败，降级为本地模式');
+      console.warn('设备识别失败，降级为本地模式:', e.message);
     }
+    // 无论成功失败都更新 quota 显示（用默认值兜底）
+    if (!userState.daily_limit) userState.daily_limit = 3;
+    if (userState.remaining === undefined || userState.remaining === null) userState.remaining = 3;
+    if (!userState.plan) userState.plan = 'free';
+    updateQuotaDisplay();
+    // 后续功能也加 try 隔离
+    try { checkMyTickets(); setInterval(checkMyTickets, 30000); } catch(e) { console.warn('tickets check:', e.message); }
   }
   function updateQuotaDisplay() {
     const el = document.getElementById('quotaDisplay');
