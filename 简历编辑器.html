@@ -1644,7 +1644,8 @@
         let text = '';
         for (let i = 1; i <= doc.numPages; i++) {
           const page = await doc.getPage(i);
-          text += (await page.getTextContent()).items.map(it => it.str).join(' ') + '\n';
+          // PDF 文本块逐行拼接（不用空格，保证换行）
+          text += (await page.getTextContent()).items.map(it => it.str).join('\n') + '\n';
         }
         return text.trim();
       } else if (name.endsWith('.docx') || name.endsWith('.doc')) {
@@ -2165,48 +2166,77 @@
 
   // 智能分板块：把简历文本按关键词拆成各板块
   function splitResumeSections(text) {
-    // 板块识别关键词
+    // 板块识别关键词（精确匹配，避免"教育"和"背景"各一行时漏匹配）
     const markers = [
-      { key: 'header',     pat: /^.*?(?=教育背景|实习经历|项目经历|技能|工作经历|PROJECTS|EDUCATION|EXPERIENCE)/, label: '头部信息' },
-      { key: 'education',  pat: /教育背景|EDUCATION|教育/,   label: '教育背景' },
-      { key: 'internship', pat: /实习经历|INTERNSHIP|实习|工作经历|EXPERIENCE/, label: '实习/工作经历' },
-      { key: 'projects',   pat: /项目经历|PROJECTS|项目/,    label: '项目经历' },
-      { key: 'skills',     pat: /技能|SKILLS|证书|CERTIFICATE/, label: '技能与证书' },
+      { key: 'education',  pats: ['教育背景', 'EDUCATION', '教育经历'], label: '教育背景' },
+      { key: 'internship', pats: ['实习经历', 'INTERNSHIP', '工作经历', 'EXPERIENCE', '实习'], label: '实习/工作经历' },
+      { key: 'projects',   pats: ['项目经历', 'PROJECTS', '项目经验'], label: '项目经历' },
+      { key: 'skills',     pats: ['技能与证书', '技能', 'SKILLS', '证书', 'CERTIFICATE'], label: '技能与证书' },
     ];
-    const sections = {};
-    // 用换行分行，按行扫描
-    const lines = text.split('\n');
-    let currentKey = 'header';
-    sections.header = [];
-    sections.education = [];
-    sections.internship = [];
-    sections.projects = [];
-    sections.skills = [];
 
-    // 头部：取前 10 行（一般是姓名+联系方式）
+    // ========== 预处理：合并碎片行 ==========
+    // PDF 解析后关键词可能被拆成多行（如"教育"和"背景"各一行）
+    // 先把短碎片行合并回相邻行
+    let rawLines = text.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+    let lines = [];
+    let i = 0;
+    while (i < rawLines.length) {
+      let line = rawLines[i];
+      // 当前行短（<15字）且下一行也短 → 尝试合并
+      if (line.length < 15 && i + 1 < rawLines.length && rawLines[i+1].length < 15) {
+        // 合并后检测是否命中任何板块关键词
+        const merged = line + rawLines[i+1];
+        let hit = false;
+        for (const m of markers) {
+          for (const p of m.pats) {
+            if (merged.includes(p)) { hit = true; break; }
+          }
+          if (hit) break;
+        }
+        if (hit) {
+          lines.push(merged);
+          i += 2;  // 跳过两行
+          continue;
+        }
+      }
+      lines.push(line);
+      i++;
+    }
+
+    const sections = { header: [], education: [], internship: [], projects: [], skills: [] };
+
+    // 头部：取到第一个板块关键词出现为止
     let headerEnd = 0;
-    for (let i = 0; i < Math.min(10, lines.length); i++) {
-      const l = lines[i].trim();
-      if (!l) continue;
-      if (/教育|实习|项目|技能|EDUCATION|INTERNSHIP|PROJECTS|SKILLS/.test(l)) break;
+    for (let idx = 0; idx < lines.length; idx++) {
+      const l = lines[idx].trim();
+      let isMarker = false;
+      for (const m of markers) {
+        for (const p of m.pats) { if (l.includes(p)) { isMarker = true; break; } }
+        if (isMarker) break;
+      }
+      if (isMarker) { headerEnd = idx; break; }
       sections.header.push(l);
-      headerEnd = i + 1;
+      headerEnd = idx + 1;
     }
 
     // 扫描剩余行
-    for (let i = headerEnd; i < lines.length; i++) {
-      const l = lines[i];
+    let currentKey = null;
+    for (let idx = headerEnd; idx < lines.length; idx++) {
+      const l = lines[idx];
       let matched = null;
       for (const m of markers) {
-        if (m.key === 'header') continue;
-        if (new RegExp(m.pat).test(l.trim())) { matched = m.key; break; }
+        for (const p of m.pats) {
+          if (l.includes(p)) { matched = m.key; break; }
+        }
+        if (matched) break;
       }
       if (matched) currentKey = matched;
-      sections[currentKey].push(l);
+      if (currentKey) sections[currentKey].push(l);
     }
+
     // 去空行收尾
     Object.keys(sections).forEach(k => {
-      sections[k] = sections[k].map(s => s.trim()).filter(s => s.length > 0).join('\n').trim();
+      sections[k] = sections[k].filter(s => s.length > 0).join('\n').trim();
     });
     return sections;
   }
