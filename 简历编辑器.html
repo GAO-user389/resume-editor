@@ -2410,44 +2410,64 @@
       return div;
     }
 
-    // 把板块文本拆成 {header, desc} 条目：
-    // 有日期的行 = 经历头（公司/项目 + 职位/标签 + 日期）
-    // 无日期的行 = 上一条经历的描述（bullet）
+    // 把板块文本拆成 {header, desc} 条目
+    // 规则：
+    //   含日期的行 → 经历头的一部分（公司名和日期可能分行，需合并）
+    //   以 ·/• 开头的行 → 新描述 bullet
+    //   短行(<30字)且无句末标点、非学历词 → 新经历头（flush 当前条目）
+    //   其余 → 上一条描述的续行
     const DATE_RE = /(\d{4}[\.\-/]\d{1,2}\s*[\-–至]\s*(?:\d{4}[\.\-/]?\d{0,2}|至今|现在))/g;
+    const DEGREE_WORDS = ['博士','硕士','本科','大专','专科','MBA','在读','学位'];
     function parseEntries(text) {
       if (!text) return [];
-      const byLine = text.split('\n');
+      const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
       const entries = [];
-      let current = null;
-      for (const raw of byLine) {
-        const line = raw.trim();
-        if (!line) continue;
+      let headerBuf = [];
+      let descBuf = [];
+      let inDesc = false;
+
+      const flush = () => {
+        if (headerBuf.length || descBuf.length) {
+          entries.push({ header: headerBuf.join(' '), desc: descBuf.join('\n') });
+        }
+        headerBuf = [];
+        descBuf = [];
+        inDesc = false;
+      };
+
+      for (const line of lines) {
         const hasDate = DATE_RE.test(line);
         DATE_RE.lastIndex = 0;
-        if (hasDate) {
-          // 同行可能有多条，按日期拆分
-          const marked = line.replace(DATE_RE, '$1\x00');
-          const segs = marked.split('\x00').map(s => s.trim()).filter(s => s.length > 2);
-          for (const seg of segs) {
-            const segHasDate = DATE_RE.test(seg);
-            DATE_RE.lastIndex = 0;
-            if (segHasDate) {
-              if (current) entries.push(current);
-              current = { header: seg, desc: '' };
-            } else if (current) {
-              current.desc += (current.desc ? '\n' : '') + seg;
-            }
+        const isBullet = /^[•·\u2022]/.test(line);
+        const isDegree = DEGREE_WORDS.some(d => line.includes(d));
+        const looksLikeNewHeader = line.length < 30 && !/[：:。；;！？!?]/.test(line) && !line.includes('http') && !isDegree;
+
+        if (isBullet) {
+          inDesc = true;
+          descBuf.push(line.replace(/^[•·\u2022]\s*/, ''));
+        } else if (hasDate) {
+          inDesc = false;
+          headerBuf.push(line);
+        } else if (inDesc) {
+          if (looksLikeNewHeader) {
+            flush();
+            headerBuf.push(line);
+          } else if (descBuf.length) {
+            descBuf[descBuf.length - 1] += ' ' + line;
+          } else {
+            descBuf.push(line);
           }
         } else {
-          // 无日期 → 挂到上一条经历的描述
-          if (current) {
-            current.desc += (current.desc ? '\n' : '') + line;
+          const headerHasDate = headerBuf.some(h => { const m = DATE_RE.test(h); DATE_RE.lastIndex = 0; return m; });
+          if (headerHasDate && looksLikeNewHeader) {
+            flush();
+            headerBuf.push(line);
           } else {
-            current = { header: line, desc: '' };
+            headerBuf.push(line);
           }
         }
       }
-      if (current) entries.push(current);
+      flush();
       return entries;
     }
 
