@@ -1180,13 +1180,6 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
     )
 
 
-if __name__ == "__main__":
-    import uvicorn
-    # 云平台通过 PORT 环境变量指定端口，本地默认 8000
-    port = int(os.getenv("PORT", "8000"))
-    uvicorn.run(app, host="0.0.0.0", port=port)
-
-
 # ========== 静态资源挂载（必须放在所有路由之后，避免覆盖显式路由）==========
 class SafeStaticFiles(StaticFiles):
     """只暴露前端资源，禁止访问后端源码、配置、依赖目录。"""
@@ -1205,7 +1198,14 @@ class SafeStaticFiles(StaticFiles):
         if blocked:
             from fastapi import HTTPException
             raise HTTPException(status_code=404)
-        return await super().get_response(path, scope)
+        return await super().get_response(normalized, scope)
 
 
 app.mount("/", SafeStaticFiles(directory=str(FRONTEND_DIR)), name="frontend")
+
+
+if __name__ == "__main__":
+    import uvicorn
+    # 云平台通过 PORT 环境变量指定端口，本地默认 8000
+    port = int(os.getenv("PORT", "8000"))
+    uvicorn.run(app, host="0.0.0.0", port=port)

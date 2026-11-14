@@ -1635,10 +1635,10 @@
   // ------- 文件解析 -------
   // 板块关键词（全链路统一，避免三处列表漂移）
   const SECTION_MARKERS = [
-    { key: 'education',  pats: ['教育背景','教育经历','学历','EDUCATION','Education'] },
-    { key: 'internship', pats: ['实习经历','实习经验','工作经历','工作经验','INTERNSHIP','Internship','EXPERIENCE','Experience','WORK EXPERIENCE','Work Experience'] },
+    { key: 'education',  pats: ['教育背景','教育经历','学习经历','学历','EDUCATION','Education'] },
+    { key: 'internship', pats: ['实习和工作经历','实习经历','实习经验','工作经历','工作经验','实践经历','校园经历','校园活动','社会实践','工作实践','INTERNSHIP','Internship','EXPERIENCE','Experience','WORK EXPERIENCE','Work Experience'] },
     { key: 'projects',   pats: ['项目经历','项目经验','PROJECTS','Projects','PROJECT','Project'] },
-    { key: 'skills',     pats: ['技能与证书','专业技能','技能','证书','SKILLS','Skills','CERTIFICATE','Certificate','Certificates'] },
+    { key: 'skills',     pats: ['技能与证书','专业技能','技能','证书','荣誉奖项','获得荣誉','奖项荣誉','获奖经历','个人荣誉','荣誉证书','自我评价','个人优势','个人简介','兴趣爱好','SKILLS','Skills','CERTIFICATE','Certificate','Certificates'] },
   ];
   const ALL_MARKER_WORDS = SECTION_MARKERS.flatMap(m => m.pats);
 
@@ -1651,14 +1651,33 @@
         let text = '';
         for (let i = 1; i <= doc.numPages; i++) {
           const page = await doc.getPage(i);
-          const items = (await page.getTextContent()).items;
+          const rawItems = (await page.getTextContent()).items;
+          const pageWidth = page.getViewport({ scale: 1 }).width;
+
+          // ---- 过滤垃圾文字 ----
+          // 1) 页面边界外的 item（x<0 或 x>pageWidth）——BOSS直聘水印常放在负坐标
+          // 2) BOSS直聘防爬水印：纯ASCII字母数字(含-_), 1-2字符或长哈希串(>=15), 不含@ . ://
+          //    （保留邮箱、URL、CET-4、SQL等真实内容）
+          const isGarbage = (s) => {
+            if (/[\u4e00-\u9fa5]/.test(s)) return false;
+            if (!/^[a-zA-Z0-9_\-~]+$/.test(s)) return false;
+            if (s.length <= 2 || s.length >= 15) return true;
+            // BOSS 水印碎片：数字+小写字母的 2 字符组合（如 3t、t3、7f），可带尾部 -
+            if (/^(\d[a-z]|[a-z]\d)-?$/.test(s)) return true;
+            return false;
+          };
+          const items = rawItems.filter(it => {
+            const x = it.transform[4];
+            if (x < -5 || x > pageWidth + 5) return false;
+            if (isGarbage(it.str)) return false;
+            return true;
+          });
 
           // ---- 双栏检测 ----
           // 统计所有 item 的起始 X，若存在明显空白间隔（gutter），判定为双栏
           const xs = items.map(it => it.transform[4]).sort((a, b) => a - b);
           let gutter = null;
           if (xs.length > 20) {
-            const pageWidth = page.getViewport({ scale: 1 }).width;
             // 在页面宽度 35%~65% 区间寻找最大空白间隔
             let maxGap = 0, gapAt = null;
             for (let k = 1; k < xs.length; k++) {
@@ -1731,7 +1750,40 @@
         result = result.replace(new RegExp('[ \\t]*(' + alt + ')[ \\t]*', 'gi'), '\n$1\n');
         // 合并多余空行
         result = result.replace(/\n{3,}/g, '\n\n');
-        return result.trim();
+        const extracted = result.trim();
+
+        // ---- 图片型 PDF 兜底：文字层为空时，渲染页面并调用 OCR ----
+        if (!extracted || extracted.length < 5) {
+          try {
+            const ocrPages = [];
+            for (let i = 1; i <= doc.numPages; i++) {
+              const page = await doc.getPage(i);
+              const viewport = page.getViewport({ scale: 1.5 });
+              const canvas = document.createElement('canvas');
+              canvas.width = viewport.width;
+              canvas.height = viewport.height;
+              const ctx = canvas.getContext('2d');
+              await page.render({ canvasContext: ctx, viewport }).promise;
+              // 用 JPEG 压缩，避免 base64 超过 5MB 限制
+              const base64 = canvas.toDataURL('image/jpeg', 0.85).split(',')[1];
+              const resp = await fetch('/api/ai/ocr', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ image_base64: base64 }),
+              });
+              if (resp.ok) {
+                const data = await resp.json();
+                if (data.content) ocrPages.push(data.content);
+              }
+            }
+            if (ocrPages.length) {
+              return ocrPages.join('\n').trim();
+            }
+          } catch (ocrErr) {
+            console.warn('OCR 兜底失败，返回空文本：', ocrErr);
+          }
+        }
+        return extracted;
       } else if (name.endsWith('.docx') || name.endsWith('.doc')) {
         const res = await window['mammoth'].extractRawText({ arrayBuffer: buf });
         return res.value.trim();
@@ -2253,7 +2305,7 @@
   //   - 剩余为空或 <=1 字符（如 "教育背景 EDUCATION"→空、"1. 教育背景"→"1"）
   //   - 或行很短(<15字) 且 剩余部分是常见修饰词（核心/专业/个人…，如 "核心技能"→"核心"）
   // 内容行如 "获得技能证书"→剩"获得"(动词)、"熟悉技能与工具"→剩"熟悉与工具"，均不会误判
-  const HEADER_MODIFIERS = ['核心','专业','个人','主要','基本','相关','通用','其他','各类','多项','特长','概述','简介'];
+  const HEADER_MODIFIERS = ['核心','专业','个人','主要','基本','相关','通用','其他','各类','多项','特长','概述','简介','素质'];
   function isSectionMarkerLine(line) {
     if (!line) return false;
     const orig = line.trim();
@@ -2297,6 +2349,8 @@
     // 判断一行是否是 URL 片段（PDF 常把长 URL 拆成多行，中间单词如 experience 会误命中标记）
     const isUrlFragment = (line, prev, next) => {
       if (!line) return false;
+      // 含中文的行不可能是 URL 碎片（避免 "xxx.com教育经历" 被误判）
+      if (/[\u4e00-\u9fa5]/.test(line)) return false;
       if (/^https?:\/\//i.test(line)) return true;
       if (!line.includes(' ') && /\.[a-z]{2,}/i.test(line)) return true;
       if (!line.includes(' ') && (line.startsWith('-') || line.endsWith('-'))) return true;
@@ -2339,6 +2393,21 @@
         if (matched) currentKey = matched;
       }
       if (currentKey) sections[currentKey].push(l);
+    }
+
+    // 兜底：板块无标记时，从 header 中提取对应内容（避免无标记简历内容丢失）
+    const eduKw = /大学|学院|学校|主修课程|本科|硕士|博士|大专|专业/;
+    const intKw = /公司|集团|银行|工作室|事务所|有限公司/;
+    const contactPrefix = /^(手机|电话|邮箱|姓名|地址|出生)/;
+    if (!sections.education.length) {
+      for (const l of sections.header) {
+        if (eduKw.test(l) && !contactPrefix.test(l)) sections.education.push(l);
+      }
+    }
+    if (!sections.internship.length) {
+      for (const l of sections.header) {
+        if (intKw.test(l) && !eduKw.test(l)) sections.internship.push(l);
+      }
     }
 
     Object.keys(sections).forEach(k => {
@@ -2498,17 +2567,23 @@
     //   - 每个日期行 + 其前后的「标题行」（短、无标点、非 bullet）构成该条目的 header
     //   - 两个条目 header 之间的其余行构成前一个条目的 desc
     // 标题行判定：短行(<35字) 且 不含句读标点(，,。.；;) 且 非 bullet
-    const DATE_RE = /(\d{4}[\.\-/]\d{1,2}\s*[\-–至]\s*(?:\d{4}[\.\-/]?\d{0,2}|至今|现在))/g;
+    const DATE_RE = /(\d{4}(?:年[/\-.]?\d{1,2}月?|[/\-.]\d{1,2})?\s*[\-–至\s]+\s*(?:\d{4}(?:年[/\-.]?\d{1,2}月?|[/\-.]\d{1,2})?|至今|现在))/g;
     const DEGREE_WORDS = ['博士','硕士','本科','大专','专科','MBA','在读','学位'];
     function parseEntries(text) {
       if (!text) return [];
       const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
 
       const hasDate = (s) => { const m = DATE_RE.test(s); DATE_RE.lastIndex = 0; return m; };
-      const isBullet = (s) => /^[•·\u2022\-]\s/.test(s) || /^[•·\u2022]/.test(s);
-      // 标题行：短 + 无句读标点 + 非 bullet（公司/学校/项目名、职位、专业均符合）
-      const isHeaderLike = (s) => !isBullet(s) && s.length < 35 && !/[，,。.；;]/.test(s);
-      const stripBullet = (s) => s.replace(/^[•·\u2022\-]\s*/, '');
+      const isBullet = (s) => /^[•·\u2022\-]\s/.test(s) || /^[•·\u2022]/.test(s) || /^\d+[\.、)]\s/.test(s);
+      // 标题行：短 + 无句读标点 + 非 bullet + 不以冒号结尾（"项目描述：""责任描述："是条目内子标题，归desc）
+      const isHeaderLike = (s) => !isBullet(s) && s.length < 35 && !/[，,。.；;]/.test(s) && !/[：:]\s*$/.test(s);
+      const stripBullet = (s) => s.replace(/^[•·\u2022\-]\s*/, '').replace(/^\d+[\.、)]\s*/, '');
+      // 实体名称行：公司/学校等条目头（以"项目名称"开头，或以公司/学校类后缀结尾）
+      const ENTITY_SUFFIXES = ['公司','有限公司','分公司','集团','银行','大学','学院','学校','工作室','事务所'];
+      const isEntityHeader = (s) => {
+        if (/^项目名称/.test(s)) return true;
+        return ENTITY_SUFFIXES.some(suf => s.endsWith(suf));
+      };
 
       // 1. 找出所有日期行的索引
       const dateIdxs = [];
@@ -2517,18 +2592,22 @@
       const entries = [];
 
       if (dateIdxs.length === 0) {
-        // 无日期兜底：按 bullet 分组，每个 bullet 块前的连续标题行作为一个条目
+        // 无日期兜底：
+        //   - bullet 行 → 当前条目 desc
+        //   - 实体名称行(公司/学校/"项目名称"开头) → 新条目
+        //   - 标题行(短、无标点) 且当前条目尚无 desc → 追加到 header
+        //   - 其余 → 当前条目 desc（避免短续行被误判为新条目）
         let curHeader = [], curDesc = [];
         for (const l of lines) {
           if (isBullet(l)) {
             curDesc.push(stripBullet(l));
-          } else if (curDesc.length === 0 && isHeaderLike(l)) {
+          } else if (isEntityHeader(l)) {
+            if (curHeader.length || curDesc.length) entries.push({ header: curHeader.join(' '), desc: curDesc.join('\n') });
+            curHeader = [l]; curDesc = [];
+          } else if (isHeaderLike(l) && curDesc.length === 0) {
             curHeader.push(l);
           } else {
-            if (curHeader.length || curDesc.length) {
-              entries.push({ header: curHeader.join(' '), desc: curDesc.join('\n') });
-            }
-            curHeader = [l]; curDesc = [];
+            curDesc.push(l);
           }
         }
         if (curHeader.length || curDesc.length) entries.push({ header: curHeader.join(' '), desc: curDesc.join('\n') });
