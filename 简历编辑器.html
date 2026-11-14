@@ -1647,16 +1647,16 @@
         }
         // 给板块关键词前后插换行：消耗关键词周围的空白，统一换成换行
         const sectionMarkers = [
-          '教育背景', '教育经历', 'EDUCATION',
-          '实习经历', '工作经历', 'INTERNSHIP', 'EXPERIENCE',
-          '项目经历', '项目经验', 'PROJECTS',
-          '技能与证书', '技能', 'SKILLS', 'CERTIFICATE', '证书'
+          '教育背景', '教育经历', '学历', 'EDUCATION', 'Education',
+          '实习经历', '实习经验', '工作经历', '工作经验', 'INTERNSHIP', 'Internship', 'EXPERIENCE', 'Experience', 'WORK EXPERIENCE', 'Work Experience',
+          '项目经历', '项目经验', 'PROJECTS', 'Projects', 'PROJECT', 'Project',
+          '技能与证书', '专业技能', '技能', '证书', 'SKILLS', 'Skills', 'CERTIFICATE', 'Certificate', 'Certificates'
         ];
         sectionMarkers.sort((a, b) => b.length - a.length);
         const escapeReg = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
         let result = text.trim();
         for (const kw of sectionMarkers) {
-          result = result.replace(new RegExp('\\s*(' + escapeReg(kw) + ')\\s*', 'g'), '\n$1\n');
+          result = result.replace(new RegExp('\\s*(' + escapeReg(kw) + ')\\s*', 'gi'), '\n$1\n');
         }
         // 合并多余空行
         result = result.replace(/\n{3,}/g, '\n\n');
@@ -2179,38 +2179,33 @@
 
   // 智能分板块：把简历文本按关键词拆成各板块
   function splitResumeSections(text) {
-    // 板块识别关键词（精确匹配，避免"教育"和"背景"各一行时漏匹配）
+    // 板块识别关键词（英文大小写不敏感）
     const markers = [
-      { key: 'education',  pats: ['教育背景', 'EDUCATION', '教育经历'], label: '教育背景' },
-      { key: 'internship', pats: ['实习经历', '工作经历', 'INTERNSHIP', 'EXPERIENCE'], label: '实习/工作经历' },
-      { key: 'projects',   pats: ['项目经历', 'PROJECTS', '项目经验'], label: '项目经历' },
-      { key: 'skills',     pats: ['技能与证书', '技能', 'SKILLS', '证书', 'CERTIFICATE'], label: '技能与证书' },
+      { key: 'education',  pats: ['教育背景','教育经历','学历','EDUCATION','Education'] },
+      { key: 'internship', pats: ['实习经历','实习经验','工作经历','工作经验','INTERNSHIP','Internship','EXPERIENCE','Experience','WORK EXPERIENCE','Work Experience'] },
+      { key: 'projects',   pats: ['项目经历','项目经验','PROJECTS','Projects','PROJECT','Project'] },
+      { key: 'skills',     pats: ['技能与证书','专业技能','技能','证书','SKILLS','Skills','CERTIFICATE','Certificate','Certificates'] },
     ];
+    // 大小写不敏感包含检测
+    const hasKw = (line, kw) => {
+      if (/[\u4e00-\u9fa5]/.test(kw)) return line.includes(kw);
+      return line.toLowerCase().includes(kw.toLowerCase());
+    };
 
     // ========== 预处理：合并碎片行 ==========
-    // PDF 解析后关键词可能被拆成多行（如"教育"和"背景"各一行）
-    // 先把短碎片行合并回相邻行
     let rawLines = text.split('\n').map(l => l.trim()).filter(l => l.length > 0);
     let lines = [];
     let i = 0;
     while (i < rawLines.length) {
       let line = rawLines[i];
-      // 当前行短（<15字）且下一行也短 → 尝试合并
       if (line.length < 15 && i + 1 < rawLines.length && rawLines[i+1].length < 15) {
-        // 合并后检测是否命中任何板块关键词
         const merged = line + rawLines[i+1];
         let hit = false;
         for (const m of markers) {
-          for (const p of m.pats) {
-            if (merged.includes(p)) { hit = true; break; }
-          }
+          for (const p of m.pats) { if (hasKw(merged, p)) { hit = true; break; } }
           if (hit) break;
         }
-        if (hit) {
-          lines.push(merged);
-          i += 2;  // 跳过两行
-          continue;
-        }
+        if (hit) { lines.push(merged); i += 2; continue; }
       }
       lines.push(line);
       i++;
@@ -2224,7 +2219,7 @@
       const l = lines[idx].trim();
       let isMarker = false;
       for (const m of markers) {
-        for (const p of m.pats) { if (l.includes(p)) { isMarker = true; break; } }
+        for (const p of m.pats) { if (hasKw(l, p)) { isMarker = true; break; } }
         if (isMarker) break;
       }
       if (isMarker) { headerEnd = idx; break; }
@@ -2238,9 +2233,7 @@
       const l = lines[idx];
       let matched = null;
       for (const m of markers) {
-        for (const p of m.pats) {
-          if (l.includes(p)) { matched = m.key; break; }
-        }
+        for (const p of m.pats) { if (hasKw(l, p)) { matched = m.key; break; } }
         if (matched) break;
       }
       if (matched) currentKey = matched;
@@ -2470,11 +2463,11 @@
         // 智能分板块：客户端规则解析为主（确定性、不缺字段），AI 仅补全缺失板块
         const ruleSections = splitResumeSections(text);
         // 清理每个板块里残留的关键词行（支持"教育背景 EDUCATION"这种多关键词同行）
-        const allKws = ['教育背景','教育经历','EDUCATION','实习经历','工作经历','INTERNSHIP','EXPERIENCE','项目经历','项目经验','PROJECTS','技能与证书','技能','SKILLS','CERTIFICATE','证书'];
+        const allKws = ['教育背景','教育经历','学历','EDUCATION','Education','实习经历','实习经验','工作经历','工作经验','INTERNSHIP','Internship','EXPERIENCE','Experience','WORK EXPERIENCE','Work Experience','项目经历','项目经验','PROJECTS','Projects','PROJECT','Project','技能与证书','专业技能','技能','证书','SKILLS','Skills','CERTIFICATE','Certificate','Certificates'];
         const cleanSection = (s) => s.split('\n').filter(l => {
           let t = l.trim();
-          // 移除所有关键词，看剩下的是否只有分隔符/空白
-          for (const kw of allKws) t = t.split(kw).join('');
+          // 移除所有关键词（大小写不敏感），看剩下的是否只有分隔符/空白
+          for (const kw of allKws) t = t.replace(new RegExp(kw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'), '');
           t = t.replace(/[\s·•|｜\-–—:：]/g, '');
           return t.length > 0;
         }).join('\n').trim();
