@@ -1647,14 +1647,13 @@
           // 紧凑拼接（PDF 文本块按坐标顺序返回，同一行内容是相邻的 items）
           text += (await page.getTextContent()).items.map(it => it.str).join(' ') + '\n';
         }
-        // 给板块关键词前后插换行，让 splitResumeSections 能准确切分
-        const sectionMarkers = ['教育背景', '教育经历', 'EDUCATION',
-                                '实习经历', '工作经历', 'INTERNSHIP', 'EXPERIENCE', '实习',
-                                '项目经历', '项目经验', 'PROJECTS',
-                                '技能与证书', '技能', 'SKILLS', 'CERTIFICATE', '证书'];
-        sectionMarkers.sort((a, b) => b.length - a.length);
-        let result = text.trim();
-        for (const kw of sectionMarkers) {
+        // 给板块关键词前后插换行（与 splitResumeSections 的 pats 完全一致）
+        const sectionMarkers = [
+          '教育背景', '教育经历', 'EDUCATION',
+          '实习经历', '工作经历', 'INTERNSHIP', 'EXPERIENCE',
+          '项目经历', '项目经验', 'PROJECTS',
+          '技能与证书', '技能', 'SKILLS', 'CERTIFICATE', '证书'
+        ];
           result = result.replace(new RegExp('(\\S)(' + kw + ')', 'g'), '$1\n$2');
           result = result.replace(new RegExp('(' + kw + ')(\\S)', 'g'), '$1\n$2');
         }
@@ -2180,7 +2179,7 @@
     // 板块识别关键词（精确匹配，避免"教育"和"背景"各一行时漏匹配）
     const markers = [
       { key: 'education',  pats: ['教育背景', 'EDUCATION', '教育经历'], label: '教育背景' },
-      { key: 'internship', pats: ['实习经历', 'INTERNSHIP', '工作经历', 'EXPERIENCE', '实习'], label: '实习/工作经历' },
+      { key: 'internship', pats: ['实习经历', '工作经历', 'INTERNSHIP', 'EXPERIENCE'], label: '实习/工作经历' },
       { key: 'projects',   pats: ['项目经历', 'PROJECTS', '项目经验'], label: '项目经历' },
       { key: 'skills',     pats: ['技能与证书', '技能', 'SKILLS', '证书', 'CERTIFICATE'], label: '技能与证书' },
     ];
@@ -2252,70 +2251,101 @@
     return sections;
   }
 
-  function fillUploadedResume() {
+  // 统一渲染：把 sections dict 渲染成简历 HTML
+  function _buildResumeHTML(sections) {
+    const h = (s) => (s || '').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    let html = '<div class="resume-inner">';
+    // 头部（永远有照片占位）
+    html += '<div class="resume-header">';
+    html += '<img class="avatar" id="resumeAvatar" src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA4MCAxMDAiPjxyZWN0IHdpZHRoPSI4MCIgaGVpZ2h0PSIxMDAiIGZpbGw9IiNFNUU3RUIiLz48Y2lyY2xlIGN4PSI0MCIgY3k9IjM1IiByPSIxNSIgZmlsbD0iIzlDQTNDRiIvPjxlbGxpcHNlIGN4PSI0MCIgY3k9IjgwIiByeD0iMjUiIHJ5PSIyMCIgZmlsbD0iIzlDQTNDRiIvPjwvc3ZnPg==" alt="头像" onclick=\"document.getElementById('avatarUpload').click()\" title="点击上传照片" style="cursor:pointer;">';
+    html += '<input type="file" id="avatarUpload" accept="image/*" style="display:none" onchange="handleAvatarUpload(this)">';
+    html += '<div class="header-text">';
+    if (sections.header) {
+      sections.header.split('\n').forEach(l => {
+        html += `<div class="header-line">${h(l.trim())}</div>`;
+      });
+    }
+    html += '</div></div>';
+    // 教育
+    if (sections.education) {
+      html += `<div class="section"><div class="section-title"><div class="section-title-cn">教育背景</div><div class="section-title-en">EDUCATION</div></div>
+        <div class="section-body" style="white-space:pre-wrap;">${h(sections.education)}</div></div>`;
+    }
+    // 实习
+    if (sections.internship) {
+      html += `<div class="section"><div class="section-title"><div class="section-title-cn">实习经历</div><div class="section-title-en">INTERNSHIP</div></div>
+        <div class="section-body" style="white-space:pre-wrap;">${h(sections.internship)}</div></div>`;
+    }
+    // 项目
+    if (sections.projects) {
+      html += `<div class="section"><div class="section-title"><div class="section-title-cn">项目经历</div><div class="section-title-en">PROJECTS</div></div>
+        <div class="section-body" style="white-space:pre-wrap;">${h(sections.projects)}</div></div>`;
+    }
+    // 技能
+    if (sections.skills) {
+      html += `<div class="section"><div class="section-title"><div class="section-title-cn">技能与证书</div><div class="section-title-en">SKILLS</div></div>
+        <div class="section-body" style="white-space:pre-wrap;">${h(sections.skills)}</div></div>`;
+    }
+    html += '</div>';
+    return html;
+  }
+
+  // 照片上传处理
+  function handleAvatarUpload(input) {
+    const f = input.files[0]; if (!f) return;
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const avatar = document.getElementById('resumeAvatar');
+      if (avatar) avatar.src = e.target.result;
+    };
+    reader.readAsDataURL(f);
+  }
+
+  async function fillUploadedResume() {
     const text = document.getElementById('uploadedResumeText').value.trim();
     if (!text) { alert('请先上传或粘贴简历内容'); return; }
     const mode = document.querySelector('input[name="fillMode"]:checked').value;
 
     if (mode === 'full') {
-      // 整体替换为单栏简历
+      // 整体替换（不走 AI）
       const resume = document.getElementById('resume');
-      resume.innerHTML = `
-        <div class="resume-inner" style="padding:20px 25px;">
-          <div class="uploaded-full-text" contenteditable="false" style="white-space:pre-wrap;font-family:'Microsoft YaHei';font-size:10.5pt;line-height:1.8;color:#1C1C1C;">${text.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</div>
-        </div>`;
+      resume.innerHTML = <div class="resume-inner" style="padding:20px 25px;"><div style="white-space:pre-wrap;font-family:'Microsoft YaHei';font-size:10.5pt;line-height:1.8;color:#1C1C1C;"></div></div>;
     } else {
-      // 智能分板块
-      const sections = splitResumeSections(text);
-      const resume = document.getElementById('resume');
-      // 重建简历结构
-      let html = '<div class="resume-inner">';
-      // 头部
-      if (sections.header) {
-        html += '<div class="resume-header"><div class="header-text">';
-        sections.header.split('\n').forEach(l => {
-          html += `<div class="header-line" contenteditable="false">${l.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</div>`;
+      // 智能分板块：优先 AI 结构化，失败降级关键词
+      let sections = null;
+      let usedAI = false;
+      try {
+        const res = await fetch(BACKEND_BASE_URL + '/api/resume/parse', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text: text, fingerprint: DEVICE_FP }),
         });
-        html += '</div></div>';
+        if (res.ok) {
+          const data = await res.json();
+          if (data.ok && data.sections && !data.sections.missing_sections.includes('all')) {
+            sections = data.sections;
+            usedAI = true;
+            console.log('✅ AI 结构化解析成功');
+          }
+        }
+      } catch(e) {
+        console.warn('AI 解析失败，降级关键词分块:', e.message);
       }
-      // 教育
-      if (sections.education) {
-        html += `<div class="section"><div class="section-title"><div class="section-title-cn" contenteditable="false">教育背景</div><div class="section-title-en" contenteditable="false">EDUCATION</div></div>
-          <div class="section-body" contenteditable="false" style="white-space:pre-wrap;font-size:9.2pt;line-height:1.7;">${sections.education.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</div></div>`;
+      if (!sections) {
+        sections = splitResumeSections(text);
+        console.log('📌 使用关键词分块');
       }
-      // 实习
-      if (sections.internship) {
-        html += `<div class="section"><div class="section-title"><div class="section-title-cn" contenteditable="false">实习经历</div><div class="section-title-en" contenteditable="false">INTERNSHIP</div></div>
-          <div class="section-body" contenteditable="false" style="white-space:pre-wrap;font-size:9.2pt;line-height:1.7;">${sections.internship.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</div></div>`;
-      }
-      // 项目
-      if (sections.projects) {
-        html += `<div class="section"><div class="section-title"><div class="section-title-cn" contenteditable="false">项目经历</div><div class="section-title-en" contenteditable="false">PROJECTS</div></div>
-          <div class="section-body" contenteditable="false" style="white-space:pre-wrap;font-size:9.2pt;line-height:1.7;">${sections.projects.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</div></div>`;
-      }
-      // 技能
-      if (sections.skills) {
-        html += `<div class="section"><div class="section-title"><div class="section-title-cn" contenteditable="false">技能与证书</div><div class="section-title-en" contenteditable="false">SKILLS</div></div>
-          <div class="section-body" contenteditable="false" style="white-space:pre-wrap;font-size:9.2pt;line-height:1.7;">${sections.skills.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</div></div>`;
-      }
-      html += '</div>';
-      resume.innerHTML = html;
+      const resume = document.getElementById('resume');
+      resume.innerHTML = _buildResumeHTML(sections);
     }
 
-    // 确保所有文本元素可编辑 + 模板切换缓存重置
+    // 确保所有文本元素可编辑 + 重置缓存
     originalSectionOrder = null;
     ensureEditable();
-    // 上传后自动进入编辑模式，确保所有部分可直接编辑
     if (!editMode) toggleEdit();
     document.querySelectorAll('#resume [contenteditable]').forEach(el => el.setAttribute('contenteditable', 'true'));
     refreshSectionDelButtons();
-    // 重置历史并保存
-    history = [];
-    pushHistory();
-    autoSave();
-    autoFitOnePage();
     document.getElementById('uploadModal').classList.remove('active');
-    alert('简历已填入并进入编辑模式，所有内容均可直接修改！');
   }
   window.openUploadModal = openUploadModal;
   window.fillUploadedResume = fillUploadedResume;
@@ -3254,7 +3284,7 @@ ${userPrompt || '（无）'}
       </div>`;
     const intHtml = `
       <div class="section">
-        <div class="section-title"><span class="section-bar"></span><span class="section-title-cn" contenteditable="false">实习经历</span><span class="section-title-en">INTERNSHIP</span></div>
+      { key: 'internship', pats: ['实习经历', '工作经历', 'INTERNSHIP', 'EXPERIENCE'], label: '实习/工作经历' },
         <div class="section-divider"></div><div class="section-divider-light"></div>
         ${renderExperience(tpl.internship, false)}
       </div>`;

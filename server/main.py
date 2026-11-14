@@ -115,6 +115,12 @@ class AdminLoginRequest(BaseModel):
     password: str
 
 
+class ResumeParseRequest(BaseModel):
+    """AI 解析简历文本为结构化板块。"""
+    text: str = Field(..., min_length=10, max_length=20000)
+    fingerprint: str = Field(default='', max_length=128)
+
+
 # 管理员 session 存储（内存，重启失效；简单够用）
 _admin_sessions: dict = {}
 
@@ -278,6 +284,58 @@ def ai_chat(req: AIChatRequest, request: Request):
         headers={"X-RateLimit-Remaining": str(remaining)},
     )
 
+
+
+
+@app.post("/api/resume/parse", tags=["resume"])
+def parse_resume(req: ResumeParseRequest, request: Request):
+    """AI 把简历纯文本解析成结构化板块 JSON。前端上传 PDF/docx 后调用。"""
+    import json
+    ip = get_client_ip(request)
+
+    system_prompt = """你是简历结构化解析专家。用户会给你一段从 PDF/Word 简历里提取的纯文本，
+你需要把它拆成以下板块并严格按 JSON 输出（只输出 JSON，不要任何其他文字）：
+
+JSON schema：
+{
+  "header": "姓名\n手机\n邮箱\n求职意向...",
+  "education": "辽宁大学 外汇学 硕士 2025.09-2026.08\n新疆财经大学 国际经济与贸易 本科 2020.09-2024.06",
+  "internship": "北京新闻科技有限公司 产品运营实习生 2026.06-2026.08",
+  "projects": "金陵风物志 小红书 vibecoding 大赛参赛作品 2026.06-至今",
+  "skills": "数据分析 Excel SQL...",
+  "missing_sections": []
+}
+
+规则：
+1. 每个板块内多条记录用 \n 换行，每条一行
+2. 完整保留所有信息，不要删减
+3. 忽略板块关键词（教育背景/EDUCATION/实习经历/INTERNSHIP/项目经历/PROJECTS/技能/SKILLS）
+4. 没找到的板块设为空字符串
+5. 只输出 JSON，不要 markdown fence 或解释"""
+
+    try:
+        raw = call_llm(req.text[:15000], system_prompt)
+        cleaned = raw.strip()
+        # 去掉可能的 ```json fence
+        if cleaned.startswith('```'):
+            cleaned = re.sub(r'^```(?:json)?\s*', '', cleaned)
+            cleaned = re.sub(r'\s*```$', '', cleaned)
+            cleaned = cleaned.strip()
+        parsed = json.loads(cleaned)
+    except Exception as e:
+        logger.warning("简历解析失败 ip=%s: %s", ip, e)
+        parsed = {"header": "", "education": "", "internship": "", "projects": "", "skills": "", "missing_sections": ["all"]}
+
+    for k in ["header", "education", "internship", "projects", "skills"]:
+        if k not in parsed:
+            parsed[k] = ""
+    if "missing_sections" not in parsed:
+        parsed["missing_sections"] = []
+
+    logger.info("简历解析 ip=%s h=%s e=%s i=%s p=%s s=%s", ip,
+        bool(parsed["header"]), bool(parsed["education"]), bool(parsed["internship"]),
+        bool(parsed["projects"]), bool(parsed["skills"]))
+    return JSONResponse(content={"ok": True, "sections": parsed})
 
 @app.post("/api/ai/ocr", tags=["ai"], dependencies=[Depends(rate_limit_dependency)])
 def ai_ocr(req: OCRRequest, request: Request):
