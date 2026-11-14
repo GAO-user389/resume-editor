@@ -2334,7 +2334,8 @@
       return m ? m[0] : '';
     }
 
-    function buildEduItem(line) {
+    function buildEduItem(entry) {
+      const line = entry.header;
       const date = parseDate(line);
       const rest = date ? line.replace(date, '').trim() : line;
       // 统一把 / ｜ | 换成空格，再按空白拆 token
@@ -2367,25 +2368,32 @@
       return div;
     }
 
-    function buildExpItem(line, type) {
+    function buildExpItem(entry, type) {
       type = type || 'internship';
+      const line = entry.header;
+      const extraDesc = entry.desc || '';
       const date = parseDate(line);
       const rest = date ? line.replace(date, '').trim() : line;
       const parts = rest.split(/\s+/).filter(Boolean);
-      let company = parts[0] || rest, role = '', desc = '';
+      let company = parts[0] || rest, role = '', inlineDesc = '';
       if (parts.length >= 2) {
         if (type === 'project') {
           // 项目：公司位放项目名，role 留空，其余全进 desc
-          desc = parts.slice(1).join(' ');
+          inlineDesc = parts.slice(1).join(' ');
         } else {
           // 实习：公司名 + 职位，剩余进 desc
           company = parts[0];
           role = parts[1] || '';
-          desc = parts.slice(2).join(' ');
+          inlineDesc = parts.slice(2).join(' ');
         }
       }
+      // 合并行内描述 + 后续描述行，每行一个 bullet
+      const allDesc = [inlineDesc, extraDesc].filter(Boolean).join('\n');
+      const descLines = allDesc.split('\n').map(l => l.trim()).filter(Boolean);
       const headerHtml = '<div class="exp-header"><div><span class="company" contenteditable="false">' + h(company) + '</span>' + (role ? '<span class="role">｜' + h(role) + '</span>' : '') + '</div>' + (date ? '<div class="date" contenteditable="false">' + h(date) + '</div>' : '') + '</div>';
-      const descHtml = desc ? '<div class="exp-desc" contenteditable="false"><ul><li>' + h(desc) + '</li></ul></div>' : '<div class="exp-desc" contenteditable="false"><ul><li></li></ul></div>';
+      const descHtml = descLines.length > 0
+        ? '<div class="exp-desc" contenteditable="false"><ul>' + descLines.map(l => '<li>' + h(l.replace(/^[•·\-\u2022]\s*/, '')) + '</li>').join('') + '</ul></div>'
+        : '<div class="exp-desc" contenteditable="false"><ul><li></li></ul></div>';
       const div = document.createElement('div');
       div.className = 'exp-item';
       div.innerHTML = headerHtml + descHtml;
@@ -2402,28 +2410,52 @@
       return div;
     }
 
-    // 把板块文本拆成单条记录：先按 \n 拆，再按"日期边界"拆（AI 可能把多条塞一行）
+    // 把板块文本拆成 {header, desc} 条目：
+    // 有日期的行 = 经历头（公司/项目 + 职位/标签 + 日期）
+    // 无日期的行 = 上一条经历的描述（bullet）
     const DATE_RE = /(\d{4}[\.\-/]\d{1,2}\s*[\-–至]\s*(?:\d{4}[\.\-/]?\d{0,2}|至今|现在))/g;
-    function splitEntries(text) {
+    function parseEntries(text) {
       if (!text) return [];
       const byLine = text.split('\n');
-      const out = [];
+      const entries = [];
+      let current = null;
       for (const raw of byLine) {
         const line = raw.trim();
         if (!line) continue;
-        // 在每个日期后插入 \x00 分隔符，让日期跟随前面的条目
-        const marked = line.replace(DATE_RE, '$1\x00');
-        const segs = marked.split('\x00').map(s => s.trim()).filter(s => s.length > 2);
-        out.push(...segs);
+        const hasDate = DATE_RE.test(line);
+        DATE_RE.lastIndex = 0;
+        if (hasDate) {
+          // 同行可能有多条，按日期拆分
+          const marked = line.replace(DATE_RE, '$1\x00');
+          const segs = marked.split('\x00').map(s => s.trim()).filter(s => s.length > 2);
+          for (const seg of segs) {
+            const segHasDate = DATE_RE.test(seg);
+            DATE_RE.lastIndex = 0;
+            if (segHasDate) {
+              if (current) entries.push(current);
+              current = { header: seg, desc: '' };
+            } else if (current) {
+              current.desc += (current.desc ? '\n' : '') + seg;
+            }
+          }
+        } else {
+          // 无日期 → 挂到上一条经历的描述
+          if (current) {
+            current.desc += (current.desc ? '\n' : '') + line;
+          } else {
+            current = { header: line, desc: '' };
+          }
+        }
       }
-      return out;
+      if (current) entries.push(current);
+      return entries;
     }
 
     // 遍历 4 个板块
     const sectionMap = [
       { titleKeywords: ['教育背景', 'EDUCATION', '教育经历'], data: sections.education, itemClass: 'edu-item', builder: buildEduItem },
-      { titleKeywords: ['实习经历', 'INTERNSHIP', '工作经历', 'EXPERIENCE'], data: sections.internship, itemClass: 'exp-item', builder: (l) => buildExpItem(l, 'internship') },
-      { titleKeywords: ['项目经历', 'PROJECTS', '项目经验'], data: sections.projects, itemClass: 'exp-item', builder: (l) => buildExpItem(l, 'project') },
+      { titleKeywords: ['实习经历', 'INTERNSHIP', '工作经历', 'EXPERIENCE'], data: sections.internship, itemClass: 'exp-item', builder: (e) => buildExpItem(e, 'internship') },
+      { titleKeywords: ['项目经历', 'PROJECTS', '项目经验'], data: sections.projects, itemClass: 'exp-item', builder: (e) => buildExpItem(e, 'project') },
       { titleKeywords: ['技能', 'SKILLS', '证书'], data: sections.skills, itemClass: 'skill-cat', builder: buildSkillCat, useGrid: true },
     ];
 
@@ -2437,19 +2469,19 @@
       // 清空旧内容
       sectionEl.querySelectorAll('.edu-item, .exp-item, .skills-grid, .section-body').forEach(el => el.remove());
       
-      // 技能按行拆；其余板块按 \n + 日期边界拆
-      const lines2 = sk.useGrid
-        ? sk.data.split('\n').map(l => l.trim()).filter(l => l.length > 2)
-        : splitEntries(sk.data);
       if (sk.useGrid) {
+        // 技能按行拆
+        const skillLines = sk.data.split('\n').map(l => l.trim()).filter(l => l.length > 2);
         const grid = document.createElement('div');
         grid.className = 'skills-grid';
-        for (const l of lines2) grid.appendChild(sk.builder(l));
+        for (const l of skillLines) grid.appendChild(sk.builder(l));
         const lastDivider = sectionEl.querySelector('.section-divider-light');
         if (lastDivider) lastDivider.insertAdjacentElement('afterend', grid);
         else sectionEl.appendChild(grid);
       } else {
-        for (const l of lines2) sectionEl.appendChild(sk.builder(l));
+        // 教育/实习/项目：按 {header, desc} 条目解析
+        const entries = parseEntries(sk.data);
+        for (const entry of entries) sectionEl.appendChild(sk.builder(entry));
       }
     }
   }
