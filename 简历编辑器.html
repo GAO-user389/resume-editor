@@ -2260,30 +2260,53 @@
 
     // 1. 填充头部
     if (sections.header) {
-      const headerLines = sections.header.split('\n').map(l => l.trim()).filter(Boolean);
+      const raw = sections.header.replace(/\r/g, '');
+      // 先从全文中提取 phone/email/intent（不管是不是独立行）
+      let phone = '', email = '', intent = '', name = '';
+      // 手机: 匹配 "手机:xxx" "Tel: xxx" "📱 150..." "纯 11 位数字" 等
+      const phoneMatch = raw.match(/(?:手机|电话|Tel|Phone|联系电话|📱)\s*[:：]?\s*([1][3-9]\d{9})|(^|\s)([1][3-9]\d{9})(\s|$)/i);
+      if (phoneMatch) phone = (phoneMatch[1] || phoneMatch[3] || '').trim();
+      // 邮箱: 任何 @xxx.com/cn 格式
+      const emailMatch = raw.match(/([a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,})/);
+      if (emailMatch) email = emailMatch[1];
+      // 求职意向: "求职意向:xxx" "目标岗位:xxx" "意向:xxx"
+      const intentMatch = raw.match(/(?:求职意向|目标岗位|求职目标|意向)\s*[:：]\s*([^\n\r]+)/i);
+      if (intentMatch) intent = intentMatch[1].trim();
+      
+      // 名字: 找第一个"短行"（不是手机、不是邮箱、不是带冒号的标签行、长度 2-8 字）
+      const headerLines = raw.split('\n').map(l => l.trim()).filter(Boolean);
+      for (const line of headerLines) {
+        if (line === phone || line.includes(phone)) continue;
+        if (line.includes(email)) continue;
+        if (/^(手机|电话|Tel|Phone|邮箱|Email|求职|意向|目标|联系|📱|✉)/i.test(line)) continue;
+        // 尝试提取可能是单独的名字
+        const cleaned = line.replace(/[：:].*$/, '').trim();
+        if (cleaned.length >= 2 && cleaned.length <= 8 && /^[\u4e00-\u9fa5·•\s]+$/.test(cleaned)) {
+          name = cleaned; break;
+        }
+        // fallback: 第一行
+        if (!name) name = line;
+      }
+      
+      // 写入 DOM
+      const resume = document.getElementById('resume');
       const nameEl = resume.querySelector('.resume-header .name');
       const intentEl = resume.querySelector('.resume-header .intent-pill');
       const contactBar = resume.querySelector('.resume-header .contact-bar');
       
-      const phones = [], emails = [];
-      let nameDone = false, intentDone = false;
-      for (const line of headerLines) {
-        if (/^1[3-9]\d{9}$/.test(line)) phones.push(line);
-        else if (/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/.test(line)) emails.push(line);
-        else if (!nameDone && nameEl && (nameEl.textContent.includes('你的姓名'))) {
-          nameEl.textContent = line; nameDone = true;
-        } else if (!intentDone && intentEl && (intentEl.textContent.includes('求职意向') || intentEl.textContent.includes('目标岗位'))) {
-          const intentText = line.replace(/^求职意向[:：]\s*/i, '').replace(/^目标岗位[:：]\s*/i, '');
-          intentEl.textContent = '求职意向 · ' + intentText; intentDone = true;
-        }
+      if (name && nameEl && (nameEl.textContent.includes('你的姓名') || !nameEl.textContent.trim())) {
+        nameEl.textContent = name;
       }
-      if (phones.length && contactBar) {
+      if (intent && intentEl && (intentEl.textContent.includes('求职意向') || intentEl.textContent.includes('目标岗位'))) {
+        intentEl.textContent = '求职意向 · ' + intent;
+      }
+      if (phone && contactBar) {
         const phoneSpan = contactBar.querySelector('span:first-child .val');
-        if (phoneSpan) phoneSpan.textContent = phones[0];
+        if (phoneSpan) phoneSpan.textContent = phone;
       }
-      if (emails.length && contactBar) {
+      if (email && contactBar) {
         const emailSpan = contactBar.querySelector('span:last-child .val');
-        if (emailSpan) emailSpan.textContent = emails[0];
+        if (emailSpan) emailSpan.textContent = email;
       }
     }
 
@@ -2298,10 +2321,22 @@
     function buildEduItem(line) {
       const date = parseDate(line);
       const rest = date ? line.replace(date, '').trim() : line;
-      const parts = rest.split(/\s+/);
+      // 先按 / 或 ｜ 或 | 拆分（PDF 常见分隔符），再 trim 每个部分
+      let parts = rest.split(/[\/｜|]/).map(p => p.trim()).filter(p => p.length > 0);
+      // 如果只有一个元素或有元素里还有空格，再按空格细分
+      const flatParts = [];
+      for (const p of parts) {
+        if (p.includes(' ') && !p.includes('大学') && !p.includes('学院')) {
+          flatParts.push(...p.split(/\s+/).filter(Boolean));
+        } else {
+          flatParts.push(p);
+        }
+      }
+      parts = flatParts;
+      
       let school = rest, major = '', degree = '';
       if (parts.length >= 3) {
-        const knownDegrees = ['博士','硕士','本科','大专','专科','MBA'];
+        const knownDegrees = ['博士','硕士','本科','大专','专科','MBA','在读'];
         let degreeIdx = -1;
         for (let i = parts.length - 1; i >= 0; i--) {
           if (knownDegrees.some(d => parts[i].includes(d))) { degreeIdx = i; break; }
@@ -2314,6 +2349,9 @@
           school = parts[0];
           major = parts.slice(1).join(' ');
         }
+      } else if (parts.length === 2) {
+        school = parts[0];
+        major = parts[1];
       }
       const div = document.createElement('div');
       div.className = 'edu-item';
