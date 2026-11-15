@@ -1762,10 +1762,7 @@
 
     const pageW = doc.page.width;
     const pageH = doc.page.height;
-    // #resume 宽 210mm = 595.28pt，按 PDF 页宽等比缩放
-    const containerW = 210; // mm
-    const scale = containerW / pageW * (96 / 25.4); // mm→px: 96dpi → 1mm = 96/25.4 px; 但我们用 pt 直接渲染
-    // 简化：用 pt 作为 CSS px 单位，再整体 scale 到容器宽度
+    // 用 pt 作为 CSS px 单位，再整体 scale 到容器宽度（210mm）
     const cssScale = (210 * 96 / 25.4) / pageW;
 
     doc.pages.forEach((page, pi) => {
@@ -1773,8 +1770,6 @@
       pageEl.style.cssText = `position:relative;width:${pageW}px;height:${pageH}px;background:#fff;`;
       pageEl.style.transformOrigin = 'top left';
       pageEl.style.transform = `scale(${cssScale})`;
-      // 缩放后占位高度
-      pageEl.style.marginBottom = (pageH * cssScale) + 'px';
       // 外层用缩放后的尺寸占位
       const wrapper = document.createElement('div');
       wrapper.style.cssText = `position:relative;width:${pageW*cssScale}px;height:${pageH*cssScale}px;margin:0 auto 8px;background:#fff;box-shadow:0 2px 12px rgba(0,0,0,.1);`;
