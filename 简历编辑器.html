@@ -750,6 +750,7 @@
           <span id="parseQualityTip" style="font-size:11px;color:#6b7280;"></span>
           <button id="aiReparseBtn" class="file-btn" style="display:none;background:#FEF3C7;color:#92400E;border-color:#FCD34D;font-size:11px;padding:4px 10px;" onclick="reparseWithAI()">🔍 重新解析（AI版式识别）</button>
         </div>
+        <div class="hint" style="margin-top:8px;color:#b45309;background:#FFFBEB;border:1px solid #FDE68A;border-radius:6px;padding:6px 10px;">提取简历如有不正确的地方，请您手动改正。</div>
       </div>
 
       <div class="jd-section-title"><span class="num">3</span> 填入方式</div>
@@ -951,7 +952,7 @@
 
           <!-- 一键应用 -->
           <div style="display:flex;gap:8px;margin-top:12px;">
-            <button class="btn btn-export" onclick="applyRewrites()"> 一键应用改写建议到简历</button>
+            <button class="btn btn-export" id="applyRewriteBtn" onclick="applyRewrites()"> 一键应用改写建议到简历</button>
             <button class="btn btn-reset" onclick="copyReport()"> 复制分析报告</button>
           </div>
         </div>
@@ -2353,24 +2354,66 @@
     return suggestions;
   }
 
-  // ------- 一键应用改写（模拟：对简历 DOM 做定向修改） -------
-  function applyRewrites() {
-    if (!confirm('这会根据匹配缺口自动改写简历中的部分段落。确认前建议先开启编辑模式手动核对。')) return;
-    // 简单实现：给所有 strong 标签后面追加一个 emoji 标记，
-    // 同时给所有经历条目里的关键词加粗（演示用途）
-    const descEls = document.querySelectorAll('.exp-desc li');
-    descEls.forEach(li => {
-      const text = li.innerText;
-      if (/\d/.test(text) && !li.querySelector('strong')) {
-        // 把第一个数字或成果加粗
-        const m = text.match(/([\d,]+[\+%％]?)/);
-        if (m) {
-          li.innerHTML = text.replace(m[1], '<strong>' + m[1] + '</strong>');
-        }
-      }
-    });
-    alert(' 已自动增强简历关键词加粗。你可以开启编辑后继续手动调整。');
-    autoFitOnePage();
+  // ------- 一键应用改写：调用 AI 针对 JD 定向改写简历 -------
+  async function applyRewrites() {
+    if (aiLoading) return;
+    const jdText = document.getElementById('jdText').value.trim();
+    if (!jdText) { showToast('请先粘贴或上传 JD 岗位描述', 'warn'); return; }
+    const resumeText = document.getElementById('resume').innerText.trim();
+    if (!resumeText) { showToast('简历内容为空，请先上传或填写简历', 'warn'); return; }
+
+    // 收集匹配分析结果，让 AI 针对性改写
+    const missingEls = document.querySelectorAll('#jdMatch .jd-match-col:nth-child(3) li');
+    const partialEls = document.querySelectorAll('#jdMatch .jd-match-col:nth-child(2) li');
+    const missing = Array.from(missingEls).map(li => li.innerText.split('·')[0].trim()).filter(Boolean);
+    const partial = Array.from(partialEls).map(li => li.innerText.split('·')[0].trim()).filter(Boolean);
+
+    if (!confirm('将根据 JD 匹配缺口，由 AI 针对性改写简历内容（保留真实经历，优化表述、融入关键词、补充量化）。是否继续？')) return;
+
+    aiLoading = true;
+    const applyBtn = document.getElementById('applyRewriteBtn');
+    const oldBtnText = applyBtn ? applyBtn.textContent : '';
+    if (applyBtn) { applyBtn.disabled = true; applyBtn.style.opacity = '0.6'; applyBtn.textContent = ' AI改写中...'; }
+    showToast('AI 正在针对 JD 改写简历，请稍候...', 'info');
+
+    try {
+      const prompt = `你是资深简历优化顾问。请根据以下 JD 和匹配缺口，对简历进行针对性改写。
+
+【JD】
+${jdText}
+
+【简历未覆盖的 JD 要求】
+${missing.join('、') || '（无）'}
+
+【简历部分覆盖的 JD 要求】
+${partial.join('、') || '（无）'}
+
+【当前简历】
+${resumeText}
+
+改写要求：
+1. 保持简历真实经历，不编造经历和数据
+2. 把 JD 要求的关键词自然融入对应经历的描述中
+3. 升级弱动词（做了/参与/负责 → 策划/主导/搭建/推动/优化/落地）
+4. 给可量化的成果补充数字（如提升了X%、服务了X人），无法确定的用"XX"占位由用户填写
+5. 保持板块结构：教育经历、实习经历、项目经历、专业技能、自我评价
+6. 只输出改写后的完整简历文本，不要任何解释或前后缀文字`;
+
+      const rewritten = await callLLM(prompt, '你是专业简历优化顾问，只输出改写后的简历文本。');
+      if (!rewritten || rewritten.trim().length < 20) throw new Error('AI 返回内容过短，请重试');
+
+      // 用改写后的简历重新填入模板
+      const sections = splitResumeSections(rewritten);
+      applySectionsToTemplate(sections);
+      autoFitOnePage();
+
+      showToast(' 简历已根据 JD 完成 AI 定向改写，请检查内容并手动调整', 'success');
+    } catch (e) {
+      showToast('AI 改写失败：' + (e.message || '未知错误'), 'error');
+    } finally {
+      aiLoading = false;
+      if (applyBtn) { applyBtn.disabled = false; applyBtn.style.opacity = '1'; applyBtn.textContent = oldBtnText || ' 一键应用改写'; }
+    }
   }
 
   async function copyReport() {
@@ -3218,6 +3261,53 @@
   }
   identifyDevice();
 
+  /* ---------- JD 输入框支持直接粘贴截图识别 ---------- */
+  (function initJDPasteImage() {
+    const jdText = document.getElementById('jdText');
+    if (!jdText) return;
+    // 提示用户可粘贴截图
+    jdText.placeholder = '粘贴完整的岗位描述 / Job Description...（也可直接 Ctrl+V 粘贴截图自动识别）';
+    jdText.addEventListener('paste', async function (e) {
+      const items = e.clipboardData ? e.clipboardData.items : null;
+      if (!items) return;
+      let imageFile = null;
+      for (const item of items) {
+        if (item.type.startsWith('image/')) {
+          imageFile = item.getAsFile();
+          break;
+        }
+      }
+      if (!imageFile) return; // 不是图片粘贴，走默认行为
+      e.preventDefault();
+      const jdFileName = document.getElementById('jdFileName');
+      if (jdFileName) { jdFileName.textContent = ' 截图识别中...'; jdFileName.style.color = ''; }
+      try {
+        const dataUrl = await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result);
+          reader.onerror = reject;
+          reader.readAsDataURL(imageFile);
+        });
+        const base64 = dataUrl.split(',')[1];
+        const resp = await fetch('/api/ai/ocr', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ image_base64: base64, fingerprint: DEVICE_FP }),
+        });
+        const data = await resp.json();
+        if (!resp.ok) {
+          if (resp.status === 403) showPremiumModal();
+          throw new Error(data.detail || '识别失败');
+        }
+        const existing = jdText.value;
+        jdText.value = existing ? existing + '\n\n' + data.content : data.content;
+        if (jdFileName) jdFileName.textContent = ' 截图识别 ✓';
+      } catch (err) {
+        if (jdFileName) { jdFileName.textContent = ' 截图识别失败：' + err.message; jdFileName.style.color = '#B91C1C'; }
+      }
+    });
+  })();
+
   /* ---------- LLM 调用（统一走后端 /api/ai/chat） ---------- */
   async function callLLM(prompt, systemPrompt) {
     // 后端持有 API Key，前端不再发送 Key
@@ -3275,9 +3365,18 @@
   function updateRemainingCount(n) {
     aiRemaining = n;
     const el = document.getElementById('aiRemaining');
-    if (el) {
-      if (n <= 0) { el.textContent = '今日次数已用完，明日再来'; el.style.color = '#dc2626'; }
-      else { el.textContent = '今日剩余次数：' + n; el.style.color = '#059669'; }
+    if (!el) return;
+    // 付费会员 remaining=-1 表示不限次数，不能按 n<=0 判为用完
+    const isPaid = userState.plan === 'permanent' || (userState.plan === 'monthly' && userState.is_premium);
+    if (isPaid) {
+      el.textContent = '会员不限次数';
+      el.style.color = '#fbbf24';
+    } else if (n <= 0) {
+      el.textContent = '今日次数已用完，明日再来';
+      el.style.color = '#dc2626';
+    } else {
+      el.textContent = '今日剩余次数：' + n;
+      el.style.color = '#059669';
     }
   }
 
