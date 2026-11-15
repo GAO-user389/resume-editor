@@ -1868,27 +1868,62 @@
           case OPS.paintJpegXObject: {
             try {
               const objName = args[0];
-              const imgObj = page.objs.get(objName);
-              if (imgObj) {
+              let imgObj = null;
+              // pdf.js 不同版本 page.objs 的访问方式
+              if (page.objs && typeof page.objs.get === 'function') {
+                imgObj = page.objs.get(objName);
+              } else if (page.objs && typeof page.objs[objName] !== 'undefined') {
+                imgObj = page.objs[objName];
+              }
+              // 新版 pdf.js 可能有 page.commonObjs
+              if (!imgObj && page.commonObjs) {
+                if (typeof page.commonObjs.get === 'function') imgObj = page.commonObjs.get(objName);
+                else imgObj = page.commonObjs[objName];
+              }
+              if (imgObj && (imgObj.width || imgObj.height || imgObj.data || imgObj.src)) {
                 const p1 = applyCTM(0, 0);
-                const p2 = applyCTM(imgObj.width || 1, imgObj.height || 1);
+                const iw = imgObj.width || 1;
+                const ih = imgObj.height || 1;
+                const p2 = applyCTM(iw, ih);
                 let dataUrl = null;
-                if (imgObj.data && imgObj.width && imgObj.height) {
-                  const cv = document.createElement('canvas');
-                  cv.width = imgObj.width; cv.height = imgObj.height;
-                  const ctx = cv.getContext('2d');
-                  const imgData = ctx.createImageData(imgObj.width, imgObj.height);
-                  if (imgObj.data.length === imgObj.width * imgObj.height * 4) {
-                    imgData.data.set(imgObj.data);
-                  } else if (imgObj.data.length === imgObj.width * imgObj.height) {
-                    for (let k=0;k<imgObj.data.length;k++){ imgData.data[k*4]=imgObj.data[k]; imgData.data[k*4+1]=imgObj.data[k]; imgData.data[k*4+2]=imgObj.data[k]; imgData.data[k*4+3]=255; }
-                  }
-                  ctx.putImageData(imgData, 0, 0);
-                  dataUrl = cv.toDataURL('image/png');
-                } else if (imgObj.src) {
-                  dataUrl = imgObj.src;
+                // 路径1：已有 canvas 或 data
+                if (imgObj.canvas) {
+                  dataUrl = imgObj.canvas.toDataURL('image/png');
+                } else if (imgObj.data && iw > 1 && ih > 1) {
+                  try {
+                    const cv = document.createElement('canvas');
+                    cv.width = iw; cv.height = ih;
+                    const ctx = cv.getContext('2d');
+                    if (ctx.createImageData) {
+                      const imgData = ctx.createImageData(iw, ih);
+                      const raw = imgObj.data;
+                      if (raw.length === iw * ih * 4) {
+                        imgData.data.set(raw);
+                      } else if (raw.length === iw * ih) {
+                        for (let k=0;k<raw.length;k++){ imgData.data[k*4]=raw[k]; imgData.data[k*4+1]=raw[k]; imgData.data[k*4+2]=raw[k]; imgData.data[k*4+3]=255; }
+                      } else if (raw instanceof Uint8ClampedArray || raw instanceof Uint8Array) {
+                        // 直接复制 RGBA
+                        imgData.data.set(raw);
+                      }
+                      ctx.putImageData(imgData, 0, 0);
+                      dataUrl = cv.toDataURL('image/png');
+                    }
+                  } catch (e) { console.warn('[fidelity] img decode:', e.message); }
                 }
-                images.push({ x:Math.min(p1.x,p2.x), y:Math.min(p1.y,p2.y), w:Math.abs(p2.x-p1.x), h:Math.abs(p2.y-p1.y), src:dataUrl });
+                // 路径2：已有 src（object URL 或 data URL）
+                if (!dataUrl && imgObj.src) dataUrl = imgObj.src;
+                // 路径3：decode 方法
+                if (!dataUrl && typeof imgObj.decode === 'function') {
+                  try {
+                    const cv = await imgObj.decode();
+                    dataUrl = cv ? cv.toDataURL('image/png') : null;
+                  } catch (de) { /* ignore */ }
+                }
+                if (dataUrl) {
+                  images.push({ x:Math.min(p1.x,p2.x), y:Math.min(p1.y,p2.y), w:Math.abs(p2.x-p1.x), h:Math.abs(p2.y-p1.y), src:dataUrl });
+                }
+              } else {
+                errors.push('img ' + objName + ': obj=' + (imgObj ? JSON.stringify(Object.keys(imgObj)).substring(0,80) : 'null'));
               }
             } catch (ie) { console.warn('[fidelity] image extract failed:', ie.message); }
             break;
@@ -1944,8 +1979,21 @@
       const assets = await extractPageAssets(page, pageW, pageH);
 
       let blocks = [];
+      // 水印/垃圾文字过滤（与 parseFile 保持一致）
+      const isGarbage = (s) => {
+        if (!s) return true;
+        if (/[\u4e00-\u9fa5]/.test(s)) return false;
+        if (!/^[a-zA-Z0-9_\-~]+$/.test(s)) return false;
+        if (s.length <= 2 || s.length >= 15) return true;
+        if (/^(\d[a-z]|[a-z]\d)-?$/.test(s)) return true;
+        return false;
+      };
       items.forEach((it, idx) => {
         if (!it.str || !it.str.trim()) return;
+        // 过滤边界外的水印 + BOSS直聘防爬碎片
+        const x0 = it.transform[4];
+        if (x0 < -5 || x0 > pageW + 5) return;
+        if (isGarbage(it.str)) return;
         const m = it.transform;
         const fontSize = Math.round((Math.abs(m[0]) || Math.abs(m[3]) || it.height || 10) * 100) / 100;
         const x = m[4], y = m[5];
@@ -4012,20 +4060,15 @@ ${JSON.stringify(input)}
     if (!t) {
       t = document.createElement('div');
       t.id = '__toast__';
-      t.style.cssText = 'position:fixed;top:20px;left:50%;transform:translateX(-50%);z-index:99999;padding:12px 24px;border-radius:8px;color:#fff;font-size:14px;box-shadow:0 4px 20px rgba(0,0,0,0.2);opacity:0;transition:opacity .3s, visibility .3s;max-width:80vw;text-align:center;pointer-events:none;visibility:hidden;';
+      t.style.cssText = 'position:fixed;top:20px;left:50%;transform:translateX(-50%);z-index:99999;padding:12px 24px;border-radius:8px;color:#fff;font-size:14px;box-shadow:0 4px 20px rgba(0,0,0,0.2);opacity:0;transition:opacity .3s;max-width:80vw;text-align:center;';
       document.body.appendChild(t);
     }
     const colors = { info:'#1f6feb', error:'#dc2626', warn:'#d97706', success:'#059669' };
     t.style.background = colors[type] || colors.info;
     t.textContent = msg;
-    t.style.visibility = 'visible';
     t.style.opacity = '1';
     clearTimeout(t._timer);
-    clearTimeout(t._hideTimer);
-    t._timer = setTimeout(() => {
-      t.style.opacity = '0';
-      t._hideTimer = setTimeout(() => { t.style.visibility = 'hidden'; }, 350);
-    }, 3500);
+    t._timer = setTimeout(() => { t.style.opacity = '0'; }, 3500);
   }
 
   /* ---------- 剩余 AI 次数展示 ---------- */
