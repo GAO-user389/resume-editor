@@ -1767,18 +1767,18 @@
             ctm = [a*o[0]+c*o[1], b*o[0]+d*o[1], a*o[2]+c*o[3], b*o[2]+d*o[3], a*o[4]+c*o[5]+e, b*o[4]+d*o[5]+f];
             break;
           }
-          case OPS.setFillRGBColor: curFill = args.map(v=>Math.round(v*255)); break;
+          case OPS.setFillRGBColor: curFill = args.map(v=>typeof v==='number'?Math.round(v):0); break;
           case OPS.setFillColor:
-            if (args.length===1) curFill=[Math.round(args[0]*255),Math.round(args[0]*255),Math.round(args[0]*255)];
-            else if (args.length>=3) curFill=args.slice(0,3).map(v=>Math.round(v*255));
+            if (args.length===1) curFill=[Math.round(args[0]),Math.round(args[0]),Math.round(args[0])];
+            else if (args.length>=3) curFill=args.slice(0,3).map(v=>typeof v==='number'?Math.round(v):0);
             break;
-          case OPS.setFillGray: curFill=[Math.round(args[0]*255),Math.round(args[0]*255),Math.round(args[0]*255)]; break;
-          case OPS.setStrokeRGBColor: curStroke = args.map(v=>Math.round(v*255)); break;
+          case OPS.setFillGray: curFill=[Math.round(args[0]),Math.round(args[0]),Math.round(args[0])]; break;
+          case OPS.setStrokeRGBColor: curStroke = args.map(v=>typeof v==='number'?Math.round(v):0); break;
           case OPS.setStrokeColor:
-            if (args.length===1) curStroke=[Math.round(args[0]*255),Math.round(args[0]*255),Math.round(args[0]*255)];
-            else if (args.length>=3) curStroke=args.slice(0,3).map(v=>Math.round(v*255));
+            if (args.length===1) curStroke=[Math.round(args[0]),Math.round(args[0]),Math.round(args[0])];
+            else if (args.length>=3) curStroke=args.slice(0,3).map(v=>typeof v==='number'?Math.round(v):0);
             break;
-          case OPS.setStrokeGray: curStroke=[Math.round(args[0]*255),Math.round(args[0]*255),Math.round(args[0]*255)]; break;
+          case OPS.setStrokeGray: curStroke=[Math.round(args[0]),Math.round(args[0]),Math.round(args[0])]; break;
           case OPS.setLineWidth: curLineWidth = args[0] || 1; break;
           case OPS.rectangle: {
             const [x,y,w,h] = args;
@@ -1834,6 +1834,9 @@
           case OPS.showSpacedText: {
             // args 直接就是文本数组 [str, spacing, str, ...]
             const arr = args;
+            if (argSamples.length < 60) {
+              argSamples.push({ i, fn, afterUnwrap: Array.isArray(arr) ? ('Array['+arr.length+']') : typeof arr, inner: Array.isArray(arr) ? arr.slice(0,8).map(v => typeof v === 'string' ? JSON.stringify(v).substring(0,30) : (typeof v === 'number' ? v : typeof v)) : String(arr) });
+            }
             if (Array.isArray(arr)) {
               for (const el of arr) { if (typeof el === 'string') colors.push(curFill.slice()); }
             }
@@ -1877,7 +1880,7 @@
       const f = fnArr[i];
       fnFreq[f] = (fnFreq[f] || 0) + 1;
     }
-    window.__fidelityDebug = { colorsLen: colors.length, shapesLen: shapes.length, imagesLen: images.length, fnFreq, argSamples: argSamples.slice(0, 40), opsRef: { save: OPS.save, restore: OPS.restore, transform: OPS.transform, setFillRGBColor: OPS.setFillRGBColor, setFillColor: OPS.setFillColor, rectangle: OPS.rectangle, constructPath: OPS.constructPath, fill: OPS.fill, stroke: OPS.stroke, showText: OPS.showText, showSpacedText: OPS.showSpacedText, paintImageXObject: OPS.paintImageXObject }, errors };
+    window.__fidelityDebug = { colorsLen: colors.length, shapesLen: shapes.length, imagesLen: images.length, fnFreq, argSamples: argSamples.slice(0, 60), allOps: Object.keys(OPS).reduce((a,k)=>{a[OPS[k]]=k;return a;},{}), opsRef: { save: OPS.save, restore: OPS.restore, transform: OPS.transform, setFillRGBColor: OPS.setFillRGBColor, setFillColor: OPS.setFillColor, rectangle: OPS.rectangle, constructPath: OPS.constructPath, fill: OPS.fill, eofill: OPS.eofill, fillStroke: OPS.fillStroke, eofillStroke: OPS.eofillStroke, stroke: OPS.stroke, closeStroke: OPS.closeStroke, showText: OPS.showText, showSpacedText: OPS.showSpacedText, paintImageXObject: OPS.paintImageXObject }, errors };
     return { colors, shapes, images };
   }
 
