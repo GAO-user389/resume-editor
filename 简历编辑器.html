@@ -2510,11 +2510,12 @@
   function isSectionMarkerLine(line) {
     if (!line) return false;
     const orig = line.trim();
-    let t = orig;
+    // 先移除所有空白（含全角空格），避免 "教育 经历" 这类被空格拆开的标题漏判
+    let t = orig.replace(/\s+/g, '');
     for (const kw of ALL_MARKER_WORDS) {
       t = t.replace(new RegExp(kw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'), '');
     }
-    t = t.replace(/[\s·•|｜\-–—:：、,，.。（）()【】\[\]《》<>]/g, '');
+    t = t.replace(/[·•|｜\-–—:：、,，.。（）()【】\[\]《》<>]/g, '');
     if (t.length <= 1) return true;
     if (orig.length < 15 && HEADER_MODIFIERS.includes(t)) return true;
     // 动态语义兜底：短行(<12字) + 含板块语义关键词 + 不以标点/冒号结尾 → 判为标题
@@ -2527,8 +2528,10 @@
   // 智能分板块：把简历文本按关键词拆成各板块
   function splitResumeSections(text) {
     const hasKw = (line, kw) => {
-      if (/[\u4e00-\u9fa5]/.test(kw)) return line.includes(kw);
-      return line.toLowerCase().includes(kw.toLowerCase());
+      // 移除空白后再匹配，避免 "教育 经历" 被空格拆开漏判
+      const cleanLine = line.replace(/\s+/g, '');
+      if (/[\u4e00-\u9fa5]/.test(kw)) return cleanLine.includes(kw);
+      return cleanLine.toLowerCase().includes(kw.toLowerCase());
     };
 
     let rawLines = text.split('\n').map(l => l.trim()).filter(l => l.length > 0);
