@@ -1860,13 +1860,13 @@
         }
       } catch (e) { /* 单个 operator 出错不影响整体 */ }
     }
-    // 调试：暴露首个 operator 信息
-    if (fnArr.length) {
-      errors.push(`debug: fnArr len=${fnArr.length}, first fn=${fnArr[0]}, first args type=${typeof argsArr[0]}, first args isArray=${Array.isArray(argsArr[0])}`);
-    } else {
-      errors.push('debug: fnArr is EMPTY');
+    // 调试：收集 fn 频率分布
+    const fnFreq = {};
+    for (let i = 0; i < fnArr.length; i++) {
+      const f = fnArr[i];
+      fnFreq[f] = (fnFreq[f] || 0) + 1;
     }
-    window.__fidelityDebug = { colorsLen: colors.length, shapesLen: shapes.length, imagesLen: images.length, errors };
+    window.__fidelityDebug = { colorsLen: colors.length, shapesLen: shapes.length, imagesLen: images.length, fnFreq, opsRef: { save: OPS.save, restore: OPS.restore, transform: OPS.transform, setFillRGBColor: OPS.setFillRGBColor, setFillColor: OPS.setFillColor, rectangle: OPS.rectangle, constructPath: OPS.constructPath, fill: OPS.fill, stroke: OPS.stroke, showText: OPS.showText, showSpacedText: OPS.showSpacedText, paintImageXObject: OPS.paintImageXObject }, errors };
     return { colors, shapes, images };
   }
 
