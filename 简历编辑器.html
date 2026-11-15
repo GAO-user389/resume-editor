@@ -1719,12 +1719,16 @@
   function rgbCss(c) { return `rgb(${c[0]},${c[1]},${c[2]})`; }
 
   // 从 operatorList 提取文本颜色、图形、图片
-  // 返回 { colors: [], shapes: [], images: [] }
+  // 返回 { colors: [], shapes: [], images: [], errors: [] }
   async function extractPageAssets(page, pageW, pageH) {
     const OPS = window.pdfjsLib.OPS;
-    const opList = await page.getOperatorList();
-    const fnArr = opList.fnArray;
-    const argsArr = opList.argsArray;
+    const errors = [];
+    let opList, fnArr, argsArr;
+    try {
+      opList = await page.getOperatorList();
+      fnArr = opList.fnArray || opList.fnArray_ || [];
+      argsArr = opList.argsArray || opList.argsArray_ || [];
+    } catch (e) { errors.push('getOperatorList: ' + e.message); fnArr = []; argsArr = []; }
     const colors = [];
     const shapes = [];
     const images = [];
@@ -1856,6 +1860,13 @@
         }
       } catch (e) { /* 单个 operator 出错不影响整体 */ }
     }
+    // 调试：暴露首个 operator 信息
+    if (fnArr.length) {
+      errors.push(`debug: fnArr len=${fnArr.length}, first fn=${fnArr[0]}, first args type=${typeof argsArr[0]}, first args isArray=${Array.isArray(argsArr[0])}`);
+    } else {
+      errors.push('debug: fnArr is EMPTY');
+    }
+    window.__fidelityDebug = { colorsLen: colors.length, shapesLen: shapes.length, imagesLen: images.length, errors };
     return { colors, shapes, images };
   }
 
