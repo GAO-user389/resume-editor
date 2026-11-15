@@ -1732,10 +1732,13 @@
     const colors = [];
     const shapes = [];
     const images = [];
+    const posColorMap = {}; // "x,y" -> [r,g,b]，用于按位置匹配文本颜色
     let curFill = [0,0,0], curStroke = [0,0,0];
     let curLineWidth = 1;
+    let curLeading = 0;
     // CTM: 当前变换矩阵 [a,b,c,d,e,f]，默认单位矩阵
     let ctm = [1,0,0,1,0,0];
+    let tm = [1,0,0,1,0,0]; // text matrix
     const ctmStack = [];
     // 累积路径点
     let pathPts = []; // [{x,y}]
@@ -1744,6 +1747,7 @@
       x: ctm[0]*x + ctm[2]*y + ctm[4],
       y: ctm[1]*x + ctm[3]*y + ctm[5]
     });
+    const textPos = () => applyCTM(tm[4], tm[5]);
 
     for (let i = 0; i < fnArr.length; i++) {
       const fn = fnArr[i];
@@ -1775,6 +1779,10 @@
             break;
           case OPS.setStrokeGray: curStroke=[Math.round(args[0]),Math.round(args[0]),Math.round(args[0])]; break;
           case OPS.setLineWidth: curLineWidth = args[0] || 1; break;
+          case OPS.setLeading: curLeading = args[0] || 0; break;
+          case OPS.setTextMatrix: tm = args.slice(0,6); break;
+          case OPS.moveText: tm = [1,0,0,1, tm[4]+(args[0]||0), tm[5]+(args[1]||0)]; break;
+          case OPS.nextLine: tm = [tm[0],tm[1],tm[2],tm[3], tm[4], tm[5]-curLeading]; break;
           case OPS.rectangle: {
             const [x,y,w,h] = args;
             const p1 = applyCTM(x, y);
@@ -1851,9 +1859,11 @@
           }
           case OPS.showText:
           case OPS.showSpacedText: {
-            // args 直接就是文本数组 [str, spacing, str, ...]
             const arr = args;
             if (Array.isArray(arr)) {
+              const tp = textPos();
+              const key = Math.round(tp.x) + ',' + Math.round(tp.y);
+              posColorMap[key] = curFill.slice();
               for (const el of arr) {
                 if (typeof el === 'string') { if (el.trim()) colors.push(curFill.slice()); }
                 else if (el && typeof el === 'object') {
@@ -1902,8 +1912,8 @@
       const f = fnArr[i];
       fnFreq[f] = (fnFreq[f] || 0) + 1;
     }
-    window.__fidelityDebug = { colorsLen: colors.length, shapesLen: shapes.length, imagesLen: images.length, fnFreq, errors };
-    return { colors, shapes, images };
+    window.__fidelityDebug = { colorsLen: colors.length, shapesLen: shapes.length, imagesLen: images.length, fnFreq, posColorKeys: Object.keys(posColorMap).length, errors };
+    return { colors, shapes, images, posColorMap };
   }
 
   // 分栏检测 + 阅读顺序排序
@@ -1952,7 +1962,21 @@
         const w = it.width || (fontSize * it.str.length * 0.5);
         const h = it.height || fontSize;
         const isBold = /bold|black|heavy|extrabold|semibold|demibold/i.test(it.fontName || '');
-        const color = assets.colors[idx] || [0,0,0];
+        // 按位置匹配颜色：从 posColorMap 查找最近的文本位置
+        let color = [0,0,0];
+        const rx = Math.round(x), ry = Math.round(y);
+        if (assets.posColorMap[rx+','+ry]) {
+          color = assets.posColorMap[rx+','+ry];
+        } else {
+          // 容差匹配：在 ±2pt 范围内找最近的
+          let best = null, bestDist = 9;
+          for (const key of Object.keys(assets.posColorMap)) {
+            const [kx, ky] = key.split(',').map(Number);
+            const d = Math.abs(kx - rx) + Math.abs(ky - ry);
+            if (d < bestDist) { bestDist = d; best = assets.posColorMap[key]; }
+          }
+          if (best) color = best;
+        }
         // 旋转文本（水印）：transform 的 b/c 分量非零
         const isRotated = Math.abs(m[1]) > 0.01 || Math.abs(m[2]) > 0.01;
         blocks.push({
