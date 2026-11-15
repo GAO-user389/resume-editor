@@ -1732,7 +1732,6 @@
     const colors = [];
     const shapes = [];
     const images = [];
-    const argSamples = []; // 调试：采样前20个op的args类型
     let curFill = [0,0,0], curStroke = [0,0,0];
     let curLineWidth = 1;
     // CTM: 当前变换矩阵 [a,b,c,d,e,f]，默认单位矩阵
@@ -1749,10 +1748,6 @@
     for (let i = 0; i < fnArr.length; i++) {
       const fn = fnArr[i];
       let args = argsArr[i];
-      const rawArgsType = args === null ? 'null' : (Array.isArray(args) ? 'Array['+args.length+']' : (typeof args === 'string' ? 'string['+args.length+']' : (args && typeof args.length === 'number' ? args.constructor.name+'['+args.length+']' : typeof args)));
-      if (i < 25 || fn === 44 || fn === 59 || fn === 91 || fn === 20) {
-        argSamples.push({ i, fn, rawType: rawArgsType, sample: args && typeof args.length === 'number' ? Array.from(args).slice(0,6).map(v => typeof v === 'string' ? JSON.stringify(v).substring(0,40) : (typeof v === 'number' ? v : (v && typeof v.length==='number' ? '['+v.length+']' : typeof v))) : String(args) });
-      }
       // 兼容：args 可能是 TypedArray，统一转普通数组
       if (args && !Array.isArray(args) && typeof args.length === 'number') args = Array.from(args);
       // 兼容：有些版本 args 是 [arg] 包裹形式，解包
@@ -1788,25 +1783,40 @@
             break;
           }
           case OPS.constructPath: {
-            // args: [operators, points] 或直接 operators/points
+            // args: [operators, points]
             let ops = args[0], pts = args[1];
             if (Array.isArray(args) && args.length > 2 && !Array.isArray(args[0])) {
               ops = []; pts = args;
             }
-            if (argSamples.length < 80) {
-              argSamples.push({ i, fn: 'constructPath', opsVals: ops ? Array.from(ops).slice(0,8) : null, ptsLen: pts ? pts.length : 0, ptsSample: pts ? Array.from(pts).slice(0,8) : null, argsLen: args.length });
-            }
             if (ops && typeof pts !== 'undefined') {
               pathPts = [];
               let pi = 0;
-              for (const op of ops) {
-                if (op === 0 || op === 1) {
-                  const p = applyCTM(pts[pi], pts[pi+1]);
+              const ptsArr = Array.from(pts);
+              for (let oi = 0; oi < ops.length; oi++) {
+                const op = ops[oi];
+                if (op === 0 || op === 13) { // moveTo
+                  const p = applyCTM(ptsArr[pi], ptsArr[pi+1]);
                   pathPts.push(p); pi += 2;
-                  if (op === 0) pathStart = p;
-                } else if (op === 2) { pi += 6; }
-                else if (op === 3) { pi += 4; }
-                else if (op === 4) { if (pathStart) pathPts.push(pathStart); }
+                  pathStart = p;
+                } else if (op === 1 || op === 14) { // lineTo
+                  const p = applyCTM(ptsArr[pi], ptsArr[pi+1]);
+                  pathPts.push(p); pi += 2;
+                } else if (op === 2) { pi += 6; } // bezierCurveTo
+                else if (op === 3) { pi += 4; } // quadraticCurveTo
+                else if (op === 4) { if (pathStart) pathPts.push(pathStart); } // closePath
+                else if (op === 5 || op === 19) { // rectangle: x, y, w, h
+                  const x = ptsArr[pi], y = ptsArr[pi+1], w = ptsArr[pi+2], h = ptsArr[pi+3];
+                  const p1 = applyCTM(x, y);
+                  const p2 = applyCTM(x+w, y+h);
+                  pathPts.push(p1, {x:applyCTM(x+w,y).x,y:applyCTM(x+w,y).y}, p2, {x:applyCTM(x,y+h).x,y:applyCTM(x,y+h).y});
+                  pi += 4;
+                } else {
+                  // 未知 op，尝试按 2 个点读取（lineTo 语义）
+                  if (pi + 1 < ptsArr.length) {
+                    const p = applyCTM(ptsArr[pi], ptsArr[pi+1]);
+                    pathPts.push(p); pi += 2;
+                  }
+                }
               }
             }
             break;
@@ -1843,14 +1853,13 @@
           case OPS.showSpacedText: {
             // args 直接就是文本数组 [str, spacing, str, ...]
             const arr = args;
-            if (argSamples.length < 80) {
-              const firstObj = Array.isArray(arr) && arr.length ? arr[0] : null;
-              argSamples.push({ i, fn, afterUnwrap: Array.isArray(arr) ? ('Array['+arr.length+']') : typeof arr, innerTypes: Array.isArray(arr) ? arr.slice(0,4).map(v => typeof v) : [], firstObjKeys: firstObj && typeof firstObj === 'object' ? Object.keys(firstObj).slice(0,8) : null, firstObjStr: firstObj ? String(firstObj).substring(0,80) : null });
-            }
             if (Array.isArray(arr)) {
               for (const el of arr) {
-                if (typeof el === 'string') colors.push(curFill.slice());
-                else if (el && typeof el === 'object' && typeof el.str === 'string') colors.push(curFill.slice());
+                if (typeof el === 'string') { if (el.trim()) colors.push(curFill.slice()); }
+                else if (el && typeof el === 'object') {
+                  const s = el.unicode || el.fontChar || '';
+                  if (typeof s === 'string' && s.trim()) colors.push(curFill.slice());
+                }
               }
             }
             break;
@@ -1893,7 +1902,7 @@
       const f = fnArr[i];
       fnFreq[f] = (fnFreq[f] || 0) + 1;
     }
-    window.__fidelityDebug = { colorsLen: colors.length, shapesLen: shapes.length, imagesLen: images.length, fnFreq, argSamples: argSamples.slice(0, 60), allOps: Object.keys(OPS).reduce((a,k)=>{a[OPS[k]]=k;return a;},{}), opsRef: { save: OPS.save, restore: OPS.restore, transform: OPS.transform, setFillRGBColor: OPS.setFillRGBColor, setFillColor: OPS.setFillColor, rectangle: OPS.rectangle, constructPath: OPS.constructPath, fill: OPS.fill, eofill: OPS.eofill, fillStroke: OPS.fillStroke, eofillStroke: OPS.eofillStroke, stroke: OPS.stroke, closeStroke: OPS.closeStroke, showText: OPS.showText, showSpacedText: OPS.showSpacedText, paintImageXObject: OPS.paintImageXObject }, errors };
+    window.__fidelityDebug = { colorsLen: colors.length, shapesLen: shapes.length, imagesLen: images.length, fnFreq, errors };
     return { colors, shapes, images };
   }
 
