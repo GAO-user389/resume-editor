@@ -2359,55 +2359,167 @@
     if (aiLoading) return;
     const jdText = document.getElementById('jdText').value.trim();
     if (!jdText) { showToast('请先粘贴或上传 JD 岗位描述', 'warn'); return; }
-    const resumeText = document.getElementById('resume').innerText.trim();
-    if (!resumeText) { showToast('简历内容为空，请先上传或填写简历', 'warn'); return; }
 
-    // 收集匹配分析结果，让 AI 针对性改写
+    // 收集匹配分析结果（未覆盖 + 部分覆盖的关键词）
     const missingEls = document.querySelectorAll('#jdMatch .jd-match-col:nth-child(3) li');
     const partialEls = document.querySelectorAll('#jdMatch .jd-match-col:nth-child(2) li');
     const missing = Array.from(missingEls).map(li => li.innerText.split('·')[0].trim()).filter(Boolean);
     const partial = Array.from(partialEls).map(li => li.innerText.split('·')[0].trim()).filter(Boolean);
+    const keywords = [...missing, ...partial];
 
-    if (!confirm('将根据 JD 匹配缺口，由 AI 针对性改写简历内容（保留真实经历，优化表述、融入关键词、补充量化）。是否继续？')) return;
+    // 从 DOM 提取结构化经历条目（只取描述文字，保留公司/职位/日期不动）
+    const expItems = [];
+    document.querySelectorAll('#resume .exp-item').forEach((el, idx) => {
+      const header = el.querySelector('.exp-header')?.innerText.trim() || '';
+      const lis = el.querySelectorAll('.exp-desc li');
+      const bullets = Array.from(lis).map(li => li.innerText.trim()).filter(Boolean);
+      if (bullets.length) expItems.push({ index: idx, header, bullets });
+    });
+
+    // 提取技能板块文本
+    let skillsText = '';
+    const skillsSection = Array.from(document.querySelectorAll('#resume .section')).find(s => {
+      const t = s.querySelector('.section-title-cn')?.textContent || '';
+      return /技能|证书|SKILL/i.test(t);
+    });
+    if (skillsSection) skillsText = skillsSection.innerText.replace(/技能与证书|技能|证书|SKILLS?/gi, '').trim();
+
+    // 提取自我评价板块文本（用户可能手动添加）
+    let selfEvalText = '';
+    const selfEvalSection = Array.from(document.querySelectorAll('#resume .section')).find(s => {
+      const t = s.querySelector('.section-title-cn')?.textContent || '';
+      return /自我评价|个人优势|个人简介|个人总结/.test(t);
+    });
+    if (selfEvalSection) {
+      const body = selfEvalSection.querySelector('.section-body');
+      selfEvalText = body ? body.innerText.trim() : selfEvalSection.innerText.replace(/自我评价|个人优势|个人简介|个人总结/, '').trim();
+    }
+
+    if (!expItems.length && !skillsText && !selfEvalText) {
+      showToast('简历中没有可改写的经历内容', 'warn'); return;
+    }
+
+    if (!confirm('将根据 JD 由 AI 逐条优化经历描述（保留公司/职位/日期，只改写描述文字、融入关键词、升级动词、补充量化）。是否继续？')) return;
 
     aiLoading = true;
     const applyBtn = document.getElementById('applyRewriteBtn');
     const oldBtnText = applyBtn ? applyBtn.textContent : '';
     if (applyBtn) { applyBtn.disabled = true; applyBtn.style.opacity = '0.6'; applyBtn.textContent = ' AI改写中...'; }
-    showToast('AI 正在针对 JD 改写简历，请稍候...', 'info');
+    showToast('AI 正在针对 JD 逐条优化经历描述，请稍候...', 'info');
 
     try {
-      const prompt = `你是资深简历优化顾问。请根据以下 JD 和匹配缺口，对简历进行针对性改写。
+      const input = { items: expItems, skills: skillsText || null, self_eval: selfEvalText || null };
+      const prompt = `你是资深简历优化顾问。请根据 JD 优化简历的经历描述文字。
 
 【JD】
 ${jdText}
 
-【简历未覆盖的 JD 要求】
-${missing.join('、') || '（无）'}
+【建议融入的关键词】
+${keywords.join('、') || '（无特别要求，按常规优化即可）'}
 
-【简历部分覆盖的 JD 要求】
-${partial.join('、') || '（无）'}
+【简历数据（JSON）】
+${JSON.stringify(input)}
 
-【当前简历】
-${resumeText}
+优化规则：
+1. 只优化每条经历的 bullets 描述文字，严禁修改 header（公司/职位/日期）
+2. 把 JD 关键词自然融入对应经历的描述中，不要堆砌
+3. 升级弱动词：做了/参与/负责 → 策划/主导/搭建/推动/优化/落地/统筹
+4. 成果尽量量化（提升XX%、服务XX人、覆盖XX万），无法确定的数字用"XX"占位
+5. 每条经历的 bullet 数量保持不变，逐条对应改写
+6. 技能板块：仅优化表述、补充与 JD 相关且合理的技能描述，不编造技能
+7. 自我评价：如有，优化为 2-3 句精炼的职业定位总结
+8. 严格只输出 JSON，不要任何解释、前后缀或 markdown 代码块标记
 
-改写要求：
-1. 保持简历真实经历，不编造经历和数据
-2. 把 JD 要求的关键词自然融入对应经历的描述中
-3. 升级弱动词（做了/参与/负责 → 策划/主导/搭建/推动/优化/落地）
-4. 给可量化的成果补充数字（如提升了X%、服务了X人），无法确定的用"XX"占位由用户填写
-5. 保持板块结构：教育经历、实习经历、项目经历、专业技能、自我评价
-6. 只输出改写后的完整简历文本，不要任何解释或前后缀文字`;
+输出格式：
+{"items":[{"index":0,"bullets":["改写后的第1条","改写后的第2条"]}],"skills":"优化后的技能文本","self_eval":"优化后的自我评价"}`;
 
-      const rewritten = await callLLM(prompt, '你是专业简历优化顾问，只输出改写后的简历文本。');
-      if (!rewritten || rewritten.trim().length < 20) throw new Error('AI 返回内容过短，请重试');
+      const raw = await callLLM(prompt, '你是专业简历优化顾问，只输出合法 JSON，不要任何其他文字。');
+      if (!raw || raw.trim().length < 5) throw new Error('AI 返回内容为空，请重试');
 
-      // 用改写后的简历重新填入模板
-      const sections = splitResumeSections(rewritten);
-      applySectionsToTemplate(sections);
+      //  robust 提取 JSON（兼容 markdown 代码块包裹）
+      let jsonStr = raw.trim();
+      const fenceMatch = jsonStr.match(/```(?:json)?\s*([\s\S]*?)```/i);
+      if (fenceMatch) jsonStr = fenceMatch[1].trim();
+      const firstBrace = jsonStr.indexOf('{');
+      const lastBrace = jsonStr.lastIndexOf('}');
+      if (firstBrace >= 0 && lastBrace > firstBrace) jsonStr = jsonStr.slice(firstBrace, lastBrace + 1);
+
+      let result;
+      try { result = JSON.parse(jsonStr); }
+      catch (e) { throw new Error('AI 输出格式无法解析，请重试'); }
+      if (!result || !Array.isArray(result.items)) throw new Error('AI 输出缺少 items 字段，请重试');
+
+      // 逐条应用改写：只替换 li 文本，保留 strong 子标题前缀
+      const allExpItems = document.querySelectorAll('#resume .exp-item');
+      let updatedCount = 0;
+      for (const item of result.items) {
+        const expEl = allExpItems[item.index];
+        if (!expEl) continue;
+        const lis = expEl.querySelectorAll('.exp-desc li');
+        const newBullets = Array.isArray(item.bullets) ? item.bullets : [];
+        // 逐 li 替换文本，保留原有的 <strong> 前缀
+        lis.forEach((li, i) => {
+          const newText = newBullets[i];
+          if (newText == null) return;
+          const strong = li.querySelector('strong');
+          if (strong) {
+            li.innerHTML = strong.outerHTML + escapeHtml(newText);
+          } else {
+            li.textContent = newText;
+          }
+        });
+        // AI 返回更多 bullet：追加
+        for (let i = lis.length; i < newBullets.length; i++) {
+          const ul = expEl.querySelector('.exp-desc ul');
+          if (!ul) break;
+          const li = document.createElement('li');
+          li.textContent = newBullets[i];
+          ul.appendChild(li);
+        }
+        // AI 返回更少 bullet：移除多余的（保留至少1个）
+        if (newBullets.length > 0 && newBullets.length < lis.length) {
+          for (let i = lis.length - 1; i >= newBullets.length; i--) {
+            if (lis[i].parentElement) lis[i].remove();
+          }
+        }
+        updatedCount++;
+      }
+
+      // 应用技能优化
+      if (result.skills && skillsSection) {
+        const skillVals = skillsSection.querySelectorAll('.skill-val');
+        if (skillVals.length) {
+          // 逐行写入已有 skill-val
+          const lines = String(result.skills).split('\n').map(l => l.trim()).filter(Boolean);
+          skillVals.forEach((el, i) => { if (lines[i]) el.textContent = lines[i]; });
+        } else {
+          // section-body 形式（用户添加的自定义板块）
+          const body = skillsSection.querySelector('.section-body');
+          if (body) body.textContent = result.skills;
+        }
+      }
+
+      // 应用自我评价优化
+      if (result.self_eval && selfEvalSection) {
+        const body = selfEvalSection.querySelector('.section-body');
+        if (body) body.textContent = result.self_eval;
+        else {
+          // 没有 section-body 就清空并写入文本
+          const container = selfEvalSection.querySelector('.section-divider-light') || selfEvalSection;
+          let target = selfEvalSection.querySelector('.section-body');
+          if (!target) {
+            target = document.createElement('div');
+            target.className = 'section-body';
+            target.contentEditable = 'false';
+            target.style.cssText = 'white-space:pre-wrap;font-size:9.2pt;line-height:1.7;';
+            container.insertAdjacentElement('afterend', target);
+          }
+          target.textContent = result.self_eval;
+        }
+      }
+
       autoFitOnePage();
-
-      showToast(' 简历已根据 JD 完成 AI 定向改写，请检查内容并手动调整', 'success');
+      showToast(` 已完成 ${updatedCount} 条经历的 AI 定向优化，请检查内容`, 'success');
     } catch (e) {
       showToast('AI 改写失败：' + (e.message || '未知错误'), 'error');
     } finally {
