@@ -1779,10 +1779,11 @@
         const el = document.createElement('div');
         const { x, y, w, h } = b.bbox;
         // pdf.js y 从底部算，CSS y 从顶部算 → top = pageH - y - h
+        // overflow:visible 避免回退字体比 PDF 字体宽时文字被裁切；nowrap 保持单行
         el.style.cssText = `position:absolute;left:${x}px;top:${pageH - y - h}px;` +
-          `width:${w}px;height:${h}px;` +
+          `min-width:${w}px;height:${h}px;` +
           `font-size:${b.style.fontSize}px;font-weight:${b.style.fontWeight};color:${b.style.color};` +
-          `line-height:1;white-space:nowrap;overflow:hidden;` +
+          `line-height:1;white-space:nowrap;overflow:visible;` +
           `display:flex;align-items:center;`;
         el.textContent = b.text;
         el.dataset.blockId = b.id;
