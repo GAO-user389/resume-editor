@@ -2875,8 +2875,13 @@
         const title = s.querySelector('.section-title-cn')?.textContent || '';
         return sk.titleKeywords.some(kw => title.includes(kw));
       });
-      if (!sectionEl || !sk.data) continue;
-      
+      if (!sectionEl) continue;
+      // 无数据：清空模板默认内容，避免显示示例占位
+      if (!sk.data) {
+        sectionEl.querySelectorAll('.edu-item, .exp-item, .skills-grid, .section-body').forEach(el => el.remove());
+        continue;
+      }
+
       // 清空旧内容
       sectionEl.querySelectorAll('.edu-item, .exp-item, .skills-grid, .section-body').forEach(el => el.remove());
       
