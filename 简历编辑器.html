@@ -2689,7 +2689,7 @@
     const allSections = resume.querySelectorAll('#resume .section');
     
     function parseDate(line) {
-      const m = line.match(/(\d{4}[\.\-/]\d{1,2}\s*[\-–至]\s*(?:\d{4}[\.\-/]?\d{0,2}|至今|现在)|至今|现在)/i);
+      const m = line.match(/(\d{4}[\.\-/]\d{1,2}\s*[\-–—至~]\s*(?:\d{4}[\.\-/]?\d{0,2}|至今|现在)|至今|现在)/i);
       return m ? m[0] : '';
     }
 
@@ -2697,8 +2697,8 @@
       const line = entry.header;
       const date = parseDate(line);
       const rest = date ? line.replace(date, '').trim() : line;
-      // 统一把 / ｜ | 换成空格，再按空白拆 token
-      const tokens = rest.replace(/[\/｜|]/g, ' ').split(/\s+/).filter(Boolean);
+      // 统一把 / ｜ | · • 换成空格，再按空白拆 token
+      const tokens = rest.replace(/[\/｜|·•]/g, ' ').split(/\s+/).filter(Boolean);
       const knownDegrees = ['博士','硕士','本科','大专','专科','MBA','在读'];
       let degreeIdx = -1;
       for (let i = tokens.length - 1; i >= 0; i--) {
@@ -2734,7 +2734,7 @@
       const date = parseDate(line);
       const rest = date ? line.replace(date, '').trim() : line;
       // 统一分隔符后按空白拆 token（与 buildEduItem 对齐）
-      const parts = rest.replace(/[\/｜|]/g, ' ').split(/\s+/).filter(Boolean);
+      const parts = rest.replace(/[\/｜|·•]/g, ' ').split(/\s+/).filter(Boolean);
       let company = parts[0] || rest, role = '', inlineDesc = '';
       if (parts.length >= 2) {
         if (type === 'project') {
@@ -2775,7 +2775,7 @@
     //   - 每个日期行 + 其前后的「标题行」（短、无标点、非 bullet）构成该条目的 header
     //   - 两个条目 header 之间的其余行构成前一个条目的 desc
     // 标题行判定：短行(<35字) 且 不含句读标点(，,。.；;) 且 非 bullet
-    const DATE_RE = /(\d{4}(?:年[/\-.]?\d{1,2}月?|[/\-.]\d{1,2})?\s*[\-–至\s]+\s*(?:\d{4}(?:年[/\-.]?\d{1,2}月?|[/\-.]\d{1,2})?|至今|现在))/g;
+    const DATE_RE = /(\d{4}(?:年[/\-.]?\d{1,2}月?|[/\-.]\d{1,2})?\s*[\-–—至~\s]+\s*(?:\d{4}(?:年[/\-.]?\d{1,2}月?|[/\-.]\d{1,2})?|至今|现在))/g;
     const DEGREE_WORDS = ['博士','硕士','本科','大专','专科','MBA','在读','学位'];
     function parseEntries(text) {
       if (!text) return [];
