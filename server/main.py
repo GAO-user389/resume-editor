@@ -243,7 +243,7 @@ def ai_chat(req: AIChatRequest, request: Request):
         )
 
     # 配额检查
-    quota = check_quota(req.fingerprint or "")
+    quota = check_quota(req.fingerprint or ("ip_" + get_client_ip(request)))
     if not quota["ok"]:
         raise HTTPException(
             status_code=403,
@@ -350,7 +350,7 @@ def ai_ocr(req: OCRRequest, request: Request):
         raise HTTPException(status_code=413, detail="图片过大，请压缩后再上传")
 
     # 配额检查
-    quota = check_quota(req.fingerprint or "")
+    quota = check_quota(req.fingerprint or ("ip_" + get_client_ip(request)))
     if not quota["ok"]:
         raise HTTPException(
             status_code=403,

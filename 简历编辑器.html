@@ -1942,7 +1942,7 @@
       resp = await fetch('/api/ai/ocr', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ image_base64: base64 }),
+        body: JSON.stringify({ image_base64: base64, fingerprint: DEVICE_FP }),
         signal: controller.signal,
       });
     } catch (e) {
