@@ -1822,17 +1822,17 @@
             break;
           }
           case OPS.fill:
-          case OPS.eofill:
+          case OPS.eoFill:
           case OPS.fillStroke:
-          case OPS.eofillStroke:
+          case OPS.eoFillStroke:
           case OPS.closeFillStroke:
           case OPS.closeEOFillStroke: {
             if (pathPts.length >= 4) {
               const xs = pathPts.map(p=>p.x), ys = pathPts.map(p=>p.y);
               const minX=Math.min(...xs), maxX=Math.max(...xs), minY=Math.min(...ys), maxY=Math.max(...ys);
-              const isStroke = fn === OPS.fillStroke || fn === OPS.eofillStroke || fn === OPS.closeFillStroke || fn === OPS.closeEOFillStroke;
+              const isStroke = fn === OPS.fillStroke || fn === OPS.eoFillStroke || fn === OPS.closeFillStroke || fn === OPS.closeEOFillStroke;
               shapes.push({ type:'rect', x:minX, y:minY, w:maxX-minX, h:maxY-minY, fill:curFill.slice(), stroke: isStroke ? curStroke.slice() : null, lineWidth: isStroke ? curLineWidth : 0 });
-            } else if (pathPts.length === 2 && (fn === OPS.fillStroke || fn === OPS.eofillStroke)) {
+            } else if (pathPts.length === 2 && (fn === OPS.fillStroke || fn === OPS.eoFillStroke)) {
               shapes.push({ type:'line', x1:pathPts[0].x, y1:pathPts[0].y, x2:pathPts[1].x, y2:pathPts[1].y, stroke:curStroke.slice(), lineWidth:curLineWidth });
             }
             pathPts = [];
