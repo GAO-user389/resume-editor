@@ -486,6 +486,7 @@
       <option value="popular">通用热门</option>
     </select>
     <button class="btn btn-reset" onclick="openUploadModal()" style="background:#0891b2;color:#fff;"> 上传简历</button>
+    <button class="btn" id="fidelityModeBtn" onclick="toggleRenderMode()" style="background:#0d9488;color:#fff;font-size:11px;padding:5px 10px;display:none;" title="保真模式：按 PDF 原始版面 1:1 渲染"> 保真模式</button>
     <button class="btn btn-ai" onclick="openAISettings()" style="background:#7c3aed;color:#fff;"> AI 设置</button>
     <button class="btn btn-edit" id="editBtn" onclick="toggleEdit()"> 开启编辑</button>
     <button class="btn" id="addSectionBtn" onclick="openAddSectionModal()" style="background:#059669;color:#fff;display:none;"> 添加板块</button>
@@ -723,6 +724,8 @@
       </div>
 
     </div>
+    <!-- 保真模式画布：按 PDF 原始坐标 1:1 渲染 -->
+    <div id="fidelityCanvas" style="display:none;position:relative;width:100%;height:100%;"></div>
   </div>
 </div>
 
@@ -767,6 +770,7 @@
     </div>
     <div class="jd-footer">
       <button class="btn btn-reset" onclick="document.getElementById('uploadModal').classList.remove('active')">关闭</button>
+      <button class="btn" id="fidelityLoadBtn" onclick="loadFidelityMode()" style="background:#0d9488;color:#fff;display:none;" title="按 PDF 原始版面 1:1 载入，不套用模板"> 1:1 保真载入</button>
       <button class="btn btn-export" onclick="fillUploadedResume()"> 确认填入简历</button>
     </div>
   </div>
@@ -1647,6 +1651,195 @@
     { key: 'skills',     pats: ['技能与证书','专业技能','技能','技术能力','技术栈','证书','荣誉奖项','获得荣誉','奖项荣誉','获奖经历','获奖情况','个人荣誉','荣誉证书','自我评价','个人优势','个人简介','个人总结','兴趣爱好','论文发表','学术成果','SKILLS','Skills','CERTIFICATE','Certificate','Certificates'] },
   ];
   const ALL_MARKER_WORDS = SECTION_MARKERS.flatMap(m => m.pats);
+
+  /* ============================================================
+   * 保真模式（1:1 PDF 还原）—— Phase 0+1 实现
+   * ResumeDoc v2: pages[] → blocks[] → spans[]，每节点带 bbox + style
+   * 坐标系：pt (1/72 inch)，与 pdf.js viewport 一致
+   * ============================================================ */
+  let currentDoc = null;       // 当前 ResumeDoc（保真模式数据源）
+  let renderMode = 'reflow';   // 'reflow'（模板重排，默认） | 'fidelity'（1:1 保真）
+
+  function createEmptyDoc() {
+    return { version: 2, source: { type: '', name: '', pageCount: 0, fingerprint: '' }, page: { width: 595.28, height: 841.89, unit: 'pt' }, pages: [] };
+  }
+
+  // 从 pdf.js operatorList 提取每个文本项对应的填充色（RGB 0-255）
+  // 思路：遍历 operator 流，跟踪 setFillRGBColor/setFillColor，遇到 showText/showSpacedText
+  // 时按其产生的文本项数量把当前颜色压入 colors 队列，再与 getTextContent items 一一对应。
+  async function extractTextColors(page) {
+    const colors = [];
+    let curRGB = [0, 0, 0];
+    try {
+      const OPS = window.pdfjsLib.OPS;
+      const opList = await page.getOperatorList();
+      const fnArr = opList.fnArray;
+      const argsArr = opList.argsArray;
+      const textContent = await page.getTextContent();
+      const items = textContent.items;
+      let itemIdx = 0;
+      for (let i = 0; i < fnArr.length; i++) {
+        const fn = fnArr[i];
+        const args = argsArr[i];
+        if (fn === OPS.setFillRGBColor) {
+          curRGB = args.map(v => Math.round(v * 255));
+        } else if (fn === OPS.setFillColor) {
+          // gray or CMYK; 简化为灰度
+          if (args.length === 1) curRGB = [Math.round(args[0]*255), Math.round(args[0]*255), Math.round(args[0]*255)];
+          else if (args.length >= 3) curRGB = args.slice(0,3).map(v => Math.round(v*255));
+        } else if (fn === OPS.setFillGray) {
+          curRGB = [Math.round(args[0]*255), Math.round(args[0]*255), Math.round(args[0]*255)];
+        } else if (fn === OPS.showText || fn === OPS.showSpacedText) {
+          const arr = args[0];
+          if (Array.isArray(arr)) {
+            for (let k = 0; k < arr.length; k++) {
+              if (typeof arr[k] === 'string') {
+                colors.push(curRGB.slice());
+                itemIdx++;
+              }
+            }
+          }
+        }
+      }
+      // 兜底：如果颜色数量与 items 不一致，用黑色补齐
+      while (colors.length < items.length) colors.push([0,0,0]);
+    } catch (e) {
+      console.warn('[fidelity] color extraction failed, using black:', e.message);
+    }
+    return colors;
+  }
+
+  // 从 PDF 解析为 ResumeDoc（只做文本 + bbox + 字号 + 颜色 + 粗体）
+  async function parseFileToDoc(file) {
+    const buf = await file.arrayBuffer();
+    const pdfDoc = await window.pdfjsLib.getDocument({ data: buf }).promise;
+    const doc = createEmptyDoc();
+    doc.source = { type: 'pdf', name: file.name, pageCount: pdfDoc.numPages, fingerprint: pdfDoc.fingerprints?.[0] || '' };
+
+    for (let p = 1; p <= pdfDoc.numPages; p++) {
+      const page = await pdfDoc.getPage(p);
+      const vp = page.getViewport({ scale: 1 });
+      const pageW = vp.width, pageH = vp.height;
+      if (p === 1) { doc.page.width = pageW; doc.page.height = pageH; }
+
+      const textContent = await page.getTextContent();
+      const items = textContent.items;
+      const colors = await extractTextColors(page);
+
+      const blocks = [];
+      items.forEach((it, idx) => {
+        if (!it.str || !it.str.trim()) return;
+        const m = it.transform; // [a, b, c, d, e, f]
+        // 字号：transform 的缩放分量（a/d），pdf.js 通常 a=fontSize, d=fontSize
+        const fontSize = Math.round((Math.abs(m[0]) || Math.abs(m[3]) || it.height || 10) * 100) / 100;
+        const x = m[4];
+        const y = m[5]; // pdf.js y 是从页面底部算起
+        const w = it.width || (fontSize * it.str.length * 0.5);
+        const h = it.height || fontSize;
+        // 粗体判断：fontName 含 Bold/Black/Heavy 等
+        const isBold = /bold|black|heavy|extrabold|semibold|demibold/i.test(it.fontName || '');
+        const color = colors[idx] || [0,0,0];
+        blocks.push({
+          id: `b_${p}_${idx}`,
+          type: 'text',
+          bbox: { x, y, w, h },
+          style: { fontSize, fontWeight: isBold ? 700 : 400, color: `rgb(${color[0]},${color[1]},${color[2]})` },
+          text: it.str,
+          meta: { confidence: 1.0 }
+        });
+      });
+
+      doc.pages.push({ index: p - 1, width: pageW, height: pageH, blocks });
+    }
+    return doc;
+  }
+
+  // 保真渲染：把 ResumeDoc 按 bbox 绝对定位渲染到 #fidelityCanvas
+  function renderDocFidelity(doc) {
+    const canvas = document.getElementById('fidelityCanvas');
+    canvas.innerHTML = '';
+    if (!doc || !doc.pages.length) return;
+
+    const pageW = doc.page.width;
+    const pageH = doc.page.height;
+    // #resume 宽 210mm = 595.28pt，按 PDF 页宽等比缩放
+    const containerW = 210; // mm
+    const scale = containerW / pageW * (96 / 25.4); // mm→px: 96dpi → 1mm = 96/25.4 px; 但我们用 pt 直接渲染
+    // 简化：用 pt 作为 CSS px 单位，再整体 scale 到容器宽度
+    const cssScale = (210 * 96 / 25.4) / pageW;
+
+    doc.pages.forEach((page, pi) => {
+      const pageEl = document.createElement('div');
+      pageEl.style.cssText = `position:relative;width:${pageW}px;height:${pageH}px;background:#fff;`;
+      pageEl.style.transformOrigin = 'top left';
+      pageEl.style.transform = `scale(${cssScale})`;
+      // 缩放后占位高度
+      pageEl.style.marginBottom = (pageH * cssScale) + 'px';
+      // 外层用缩放后的尺寸占位
+      const wrapper = document.createElement('div');
+      wrapper.style.cssText = `position:relative;width:${pageW*cssScale}px;height:${pageH*cssScale}px;margin:0 auto 8px;background:#fff;box-shadow:0 2px 12px rgba(0,0,0,.1);`;
+
+      page.blocks.forEach(b => {
+        if (b.type !== 'text') return;
+        const el = document.createElement('div');
+        const { x, y, w, h } = b.bbox;
+        // pdf.js y 从底部算，CSS y 从顶部算 → top = pageH - y - h
+        el.style.cssText = `position:absolute;left:${x}px;top:${pageH - y - h}px;` +
+          `width:${w}px;height:${h}px;` +
+          `font-size:${b.style.fontSize}px;font-weight:${b.style.fontWeight};color:${b.style.color};` +
+          `line-height:1;white-space:nowrap;overflow:hidden;` +
+          `display:flex;align-items:center;`;
+        el.textContent = b.text;
+        el.dataset.blockId = b.id;
+        el.contentEditable = 'false';
+        pageEl.appendChild(el);
+      });
+      wrapper.appendChild(pageEl);
+      canvas.appendChild(wrapper);
+    });
+  }
+
+  // 切换渲染模式
+  function toggleRenderMode() {
+    const inner = document.querySelector('#resume .resume-inner');
+    const canvas = document.getElementById('fidelityCanvas');
+    const btn = document.getElementById('fidelityModeBtn');
+    const resumeEl = document.getElementById('resume');
+    if (renderMode === 'reflow') {
+      if (!currentDoc) { showToast('请先在上传简历时选择「1:1 保真载入」', 'warn'); return; }
+      renderMode = 'fidelity';
+      inner.style.display = 'none';
+      canvas.style.display = 'block';
+      resumeEl.style.overflow = 'visible';
+      resumeEl.style.height = 'auto';
+      btn.textContent = ' 重排模式';
+      btn.style.background = '#0891b2';
+      renderDocFidelity(currentDoc);
+      showToast('已切换到保真模式（按 PDF 原始版面 1:1 渲染）', 'info');
+    } else {
+      renderMode = 'reflow';
+      inner.style.display = '';
+      canvas.style.display = 'none';
+      resumeEl.style.overflow = '';
+      resumeEl.style.height = '';
+      btn.textContent = ' 保真模式';
+      btn.style.background = '#0d9488';
+      showToast('已切换到重排模式（套用编辑器模板）', 'info');
+    }
+  }
+
+  // 暴露给全局
+  window.parseFileToDoc = parseFileToDoc;
+  window.renderDocFidelity = renderDocFidelity;
+  window.toggleRenderMode = toggleRenderMode;
+  window.loadFidelityMode = loadFidelityMode;
+
+  // 从上传弹窗直接进入保真模式
+  function loadFidelityMode() {
+    if (!currentDoc) { showToast('请先上传 PDF 文件', 'warn'); return; }
+    document.getElementById('uploadModal').classList.remove('active');
+    if (renderMode !== 'fidelity') toggleRenderMode();
+  }
 
   async function parseFile(file) {
     const name = file.name.toLowerCase();
@@ -2658,8 +2851,19 @@ ${JSON.stringify(input)}
     try {
       const text = await parseFile(f);
       document.getElementById('uploadedResumeText').value = text;
-      // 修复：质量闸门 —— 不合格时提示并显示 AI 版式识别按钮
+      // PDF 同时解析为 ResumeDoc，供保真模式使用
       const isPdf = f.name.toLowerCase().endsWith('.pdf');
+      if (isPdf) {
+        try {
+          currentDoc = await parseFileToDoc(f);
+          document.getElementById('fidelityModeBtn').style.display = '';
+          document.getElementById('fidelityLoadBtn').style.display = '';
+          tip.textContent = (tip.textContent ? tip.textContent + ' | ' : '') + '已生成 1:1 保真版面';
+        } catch (de) {
+          console.warn('[fidelity] doc parse failed:', de.message);
+        }
+      }
+      // 修复：质量闸门 —— 不合格时提示并显示 AI 版式识别按钮
       if (text && isExtractionOk(text)) {
         tip.textContent = '✓ 解析质量良好';
         tip.style.color = '#059669';
