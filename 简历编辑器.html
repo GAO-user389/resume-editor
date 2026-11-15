@@ -487,6 +487,9 @@
     </select>
     <button class="btn btn-reset" onclick="openUploadModal()" style="background:#0891b2;color:#fff;"> 上传简历</button>
     <button class="btn" id="fidelityModeBtn" onclick="toggleRenderMode()" style="background:#0d9488;color:#fff;font-size:11px;padding:5px 10px;display:none;" title="保真模式：按 PDF 原始版面 1:1 渲染"> 保真模式</button>
+    <button class="btn" id="fidelityUndoBtn" onclick="undoFidelity()" style="display:none;font-size:11px;padding:5px 8px;" title="撤销">↶ 撤销</button>
+    <button class="btn" id="fidelityRedoBtn" onclick="redoFidelity()" style="display:none;font-size:11px;padding:5px 8px;" title="重做">↷ 重做</button>
+    <button class="btn" id="fidelityExportBtn" onclick="exportFidelityPDF()" style="display:none;background:#1d4ed8;color:#fff;font-size:11px;padding:5px 10px;" title="导出保真版 PDF"> 导出PDF</button>
     <button class="btn btn-ai" onclick="openAISettings()" style="background:#7c3aed;color:#fff;"> AI 设置</button>
     <button class="btn btn-edit" id="editBtn" onclick="toggleEdit()"> 开启编辑</button>
     <button class="btn" id="addSectionBtn" onclick="openAddSectionModal()" style="background:#059669;color:#fff;display:none;"> 添加板块</button>
@@ -1653,63 +1656,230 @@
   const ALL_MARKER_WORDS = SECTION_MARKERS.flatMap(m => m.pats);
 
   /* ============================================================
-   * 保真模式（1:1 PDF 还原）—— Phase 0+1 实现
-   * ResumeDoc v2: pages[] → blocks[] → spans[]，每节点带 bbox + style
+   * 保真模式（1:1 PDF 还原）—— Phase 0~5 实现
+   * ResumeDoc v2: pages[] → blocks[]，每节点带 bbox + style
    * 坐标系：pt (1/72 inch)，与 pdf.js viewport 一致
    * ============================================================ */
   let currentDoc = null;       // 当前 ResumeDoc（保真模式数据源）
   let renderMode = 'reflow';   // 'reflow'（模板重排，默认） | 'fidelity'（1:1 保真）
+  const FIDELITY_STORAGE_KEY = 'resume_doc_v2';
+  let undoStack = [];          // 撤销栈（存 ResumeDoc 快照）
+  let redoStack = [];
+  const MAX_UNDO = 30;
 
   function createEmptyDoc() {
     return { version: 2, source: { type: '', name: '', pageCount: 0, fingerprint: '' }, page: { width: 595.28, height: 841.89, unit: 'pt' }, pages: [] };
   }
 
-  // 从 pdf.js operatorList 提取每个文本项对应的填充色（RGB 0-255）
-  // 思路：遍历 operator 流，跟踪 setFillRGBColor/setFillColor，遇到 showText/showSpacedText
-  // 时按其产生的文本项数量把当前颜色压入 colors 队列，再与 getTextContent items 一一对应。
-  async function extractTextColors(page) {
-    const colors = [];
-    let curRGB = [0, 0, 0];
-    try {
-      const OPS = window.pdfjsLib.OPS;
-      const opList = await page.getOperatorList();
-      const fnArr = opList.fnArray;
-      const argsArr = opList.argsArray;
-      const textContent = await page.getTextContent();
-      const items = textContent.items;
-      let itemIdx = 0;
-      for (let i = 0; i < fnArr.length; i++) {
-        const fn = fnArr[i];
-        const args = argsArr[i];
-        if (fn === OPS.setFillRGBColor) {
-          curRGB = args.map(v => Math.round(v * 255));
-        } else if (fn === OPS.setFillColor) {
-          // gray or CMYK; 简化为灰度
-          if (args.length === 1) curRGB = [Math.round(args[0]*255), Math.round(args[0]*255), Math.round(args[0]*255)];
-          else if (args.length >= 3) curRGB = args.slice(0,3).map(v => Math.round(v*255));
-        } else if (fn === OPS.setFillGray) {
-          curRGB = [Math.round(args[0]*255), Math.round(args[0]*255), Math.round(args[0]*255)];
-        } else if (fn === OPS.showText || fn === OPS.showSpacedText) {
-          const arr = args[0];
-          if (Array.isArray(arr)) {
-            for (let k = 0; k < arr.length; k++) {
-              if (typeof arr[k] === 'string') {
-                colors.push(curRGB.slice());
-                itemIdx++;
-              }
-            }
-          }
-        }
-      }
-      // 兜底：如果颜色数量与 items 不一致，用黑色补齐
-      while (colors.length < items.length) colors.push([0,0,0]);
-    } catch (e) {
-      console.warn('[fidelity] color extraction failed, using black:', e.message);
-    }
-    return colors;
+  // 深拷贝 doc（用于撤销快照）
+  function cloneDoc(doc) { return JSON.parse(JSON.stringify(doc)); }
+
+  // 保存撤销快照
+  function pushUndo() {
+    if (!currentDoc) return;
+    undoStack.push(cloneDoc(currentDoc));
+    if (undoStack.length > MAX_UNDO) undoStack.shift();
+    redoStack = [];
   }
 
-  // 从 PDF 解析为 ResumeDoc（只做文本 + bbox + 字号 + 颜色 + 粗体）
+  // 撤销
+  function undoFidelity() {
+    if (!undoStack.length) { showToast('没有可撤销的操作', 'warn'); return; }
+    redoStack.push(cloneDoc(currentDoc));
+    currentDoc = undoStack.pop();
+    renderDocFidelity(currentDoc);
+    saveDocLocal();
+    showToast('已撤销', 'info');
+  }
+
+  // 重做
+  function redoFidelity() {
+    if (!redoStack.length) { showToast('没有可重做的操作', 'warn'); return; }
+    undoStack.push(cloneDoc(currentDoc));
+    currentDoc = redoStack.pop();
+    renderDocFidelity(currentDoc);
+    saveDocLocal();
+    showToast('已重做', 'info');
+  }
+
+  // localStorage 持久化
+  function saveDocLocal() {
+    try {
+      if (currentDoc) localStorage.setItem(FIDELITY_STORAGE_KEY, JSON.stringify(currentDoc));
+    } catch (e) { console.warn('[fidelity] save failed:', e.message); }
+  }
+  function loadDocLocal() {
+    try {
+      const raw = localStorage.getItem(FIDELITY_STORAGE_KEY);
+      return raw ? JSON.parse(raw) : null;
+    } catch (e) { return null; }
+  }
+
+  // 把 RGB 数组转 css 颜色
+  function rgbCss(c) { return `rgb(${c[0]},${c[1]},${c[2]})`; }
+
+  // 从 operatorList 提取文本颜色、图形、图片
+  // 返回 { colors: [], shapes: [], images: [] }
+  async function extractPageAssets(page, pageW, pageH) {
+    const OPS = window.pdfjsLib.OPS;
+    const opList = await page.getOperatorList();
+    const fnArr = opList.fnArray;
+    const argsArr = opList.argsArray;
+    const colors = [];
+    const shapes = [];
+    const images = [];
+    let curFill = [0,0,0], curStroke = [0,0,0];
+    let curLineWidth = 1;
+    // CTM: 当前变换矩阵 [a,b,c,d,e,f]，默认单位矩阵
+    let ctm = [1,0,0,1,0,0];
+    const ctmStack = [];
+    // 累积路径点
+    let pathPts = []; // [{x,y}]
+    let pathStart = null;
+    const applyCTM = (x, y) => ({
+      x: ctm[0]*x + ctm[2]*y + ctm[4],
+      y: ctm[1]*x + ctm[3]*y + ctm[5]
+    });
+
+    for (let i = 0; i < fnArr.length; i++) {
+      const fn = fnArr[i];
+      const args = argsArr[i];
+      try {
+        switch (fn) {
+          case OPS.save: ctmStack.push(ctm.slice()); break;
+          case OPS.restore: if (ctmStack.length) ctm = ctmStack.pop(); break;
+          case OPS.transform: {
+            const [a,b,c,d,e,f] = args;
+            // 新 CTM = 新矩阵 * 旧 CTM
+            const o = ctm;
+            ctm = [a*o[0]+c*o[1], b*o[0]+d*o[1], a*o[2]+c*o[3], b*o[2]+d*o[3], a*o[4]+c*o[5]+e, b*o[4]+d*o[5]+f];
+            break;
+          }
+          case OPS.setFillRGBColor: curFill = args.map(v=>Math.round(v*255)); break;
+          case OPS.setFillColor:
+            if (args.length===1) curFill=[Math.round(args[0]*255),Math.round(args[0]*255),Math.round(args[0]*255)];
+            else if (args.length>=3) curFill=args.slice(0,3).map(v=>Math.round(v*255));
+            break;
+          case OPS.setFillGray: curFill=[Math.round(args[0]*255),Math.round(args[0]*255),Math.round(args[0]*255)]; break;
+          case OPS.setStrokeRGBColor: curStroke = args.map(v=>Math.round(v*255)); break;
+          case OPS.setStrokeColor:
+            if (args.length===1) curStroke=[Math.round(args[0]*255),Math.round(args[0]*255),Math.round(args[0]*255)];
+            else if (args.length>=3) curStroke=args.slice(0,3).map(v=>Math.round(v*255));
+            break;
+          case OPS.setStrokeGray: curStroke=[Math.round(args[0]*255),Math.round(args[0]*255),Math.round(args[0]*255)]; break;
+          case OPS.setLineWidth: curLineWidth = args[0] || 1; break;
+          case OPS.rectangle: {
+            const [x,y,w,h] = args;
+            const p1 = applyCTM(x, y);
+            const p2 = applyCTM(x+w, y+h);
+            shapes.push({ type:'rect', x:Math.min(p1.x,p2.x), y:Math.min(p1.y,p2.y), w:Math.abs(p2.x-p1.x), h:Math.abs(p2.y-p1.y), fill:curFill.slice(), stroke:curStroke.slice(), lineWidth:curLineWidth });
+            break;
+          }
+          case OPS.constructPath: {
+            // args: [operators, args]
+            const ops = args[0], pts = args[1];
+            pathPts = [];
+            let pi = 0;
+            for (const op of ops) {
+              if (op === 0 || op === 1) { // moveTo / lineTo
+                const p = applyCTM(pts[pi], pts[pi+1]);
+                pathPts.push(p); pi += 2;
+                if (op === 0) pathStart = p;
+              } else if (op === 2 || op === 3) { // curveTo / curveTo2 / curveTo3
+                pi += (op === 2 ? 4 : 6);
+              } else if (op === 4) { // closePath
+                if (pathStart) pathPts.push(pathStart);
+              }
+            }
+            break;
+          }
+          case OPS.fill:
+          case OPS.eofill: {
+            if (pathPts.length >= 4) {
+              const xs = pathPts.map(p=>p.x), ys = pathPts.map(p=>p.y);
+              const minX=Math.min(...xs), maxX=Math.max(...xs), minY=Math.min(...ys), maxY=Math.max(...ys);
+              shapes.push({ type:'rect', x:minX, y:minY, w:maxX-minX, h:maxY-minY, fill:curFill.slice(), stroke:null, lineWidth:0 });
+            }
+            pathPts = [];
+            break;
+          }
+          case OPS.stroke: {
+            if (pathPts.length === 2) {
+              shapes.push({ type:'line', x1:pathPts[0].x, y1:pathPts[0].y, x2:pathPts[1].x, y2:pathPts[1].y, stroke:curStroke.slice(), lineWidth:curLineWidth });
+            } else if (pathPts.length >= 4) {
+              const xs = pathPts.map(p=>p.x), ys = pathPts.map(p=>p.y);
+              const minX=Math.min(...xs), maxX=Math.max(...xs), minY=Math.min(...ys), maxY=Math.max(...ys);
+              shapes.push({ type:'rect', x:minX, y:minY, w:maxX-minX, h:maxY-minY, fill:null, stroke:curStroke.slice(), lineWidth:curLineWidth });
+            }
+            pathPts = [];
+            break;
+          }
+          case OPS.showText:
+          case OPS.showSpacedText: {
+            const arr = args[0];
+            if (Array.isArray(arr)) {
+              for (const el of arr) { if (typeof el === 'string') colors.push(curFill.slice()); }
+            }
+            break;
+          }
+          case OPS.paintImageXObject:
+          case OPS.paintJpegXObject: {
+            try {
+              const objName = args[0];
+              const imgObj = page.objs.get(objName);
+              if (imgObj) {
+                // 图片位置由当前 CTM 决定
+                const p1 = applyCTM(0, 0);
+                const p2 = applyCTM(imgObj.width || 1, imgObj.height || 1);
+                let dataUrl = null;
+                if (imgObj.data && imgObj.width && imgObj.height) {
+                  const cv = document.createElement('canvas');
+                  cv.width = imgObj.width; cv.height = imgObj.height;
+                  const ctx = cv.getContext('2d');
+                  const imgData = ctx.createImageData(imgObj.width, imgObj.height);
+                  if (imgObj.data.length === imgObj.width * imgObj.height * 4) {
+                    imgData.data.set(imgObj.data);
+                  } else if (imgObj.data.length === imgObj.width * imgObj.height) {
+                    // grayscale
+                    for (let k=0;k<imgObj.data.length;k++){ imgData.data[k*4]=imgObj.data[k]; imgData.data[k*4+1]=imgObj.data[k]; imgData.data[k*4+2]=imgObj.data[k]; imgData.data[k*4+3]=255; }
+                  }
+                  ctx.putImageData(imgData, 0, 0);
+                  dataUrl = cv.toDataURL('image/png');
+                } else if (imgObj.src) {
+                  dataUrl = imgObj.src;
+                }
+                images.push({ x:Math.min(p1.x,p2.x), y:Math.min(p1.y,p2.y), w:Math.abs(p2.x-p1.x), h:Math.abs(p2.y-p1.y), src:dataUrl });
+              }
+            } catch (ie) { console.warn('[fidelity] image extract failed:', ie.message); }
+            break;
+          }
+        }
+      } catch (e) { /* 单个 operator 出错不影响整体 */ }
+    }
+    return { colors, shapes, images };
+  }
+
+  // 分栏检测 + 阅读顺序排序
+  function sortReadingOrder(blocks, pageW) {
+    if (blocks.length < 5) return blocks;
+    // 找垂直空白带（gutter）：在 20%~80% 宽度范围内找没有文本的最大区间
+    const xs = blocks.map(b => b.bbox.x);
+    const sortedXs = [...xs].sort((a,b)=>a-b);
+    let gutter = null, maxGap = 0;
+    for (let i = 1; i < sortedXs.length; i++) {
+      const gap = sortedXs[i] - sortedXs[i-1];
+      const midX = (sortedXs[i] + sortedXs[i-1]) / 2;
+      if (midX > pageW*0.2 && midX < pageW*0.8 && gap > maxGap) { maxGap = gap; gutter = midX; }
+    }
+    if (maxGap < pageW * 0.06) gutter = null; // 间隔不够大，不分栏
+    // 按栏分组：左栏 y 降序，右栏 y 降序
+    const left = gutter !== null ? blocks.filter(b => b.bbox.x < gutter) : blocks;
+    const right = gutter !== null ? blocks.filter(b => b.bbox.x >= gutter) : [];
+    const byY = (a,b) => b.bbox.y - a.bbox.y; // y 从底部算，大的在上
+    return [...left.sort(byY), ...right.sort(byY)];
+  }
+
+  // 从 PDF 解析为 ResumeDoc（文本 + 图形 + 图片 + 颜色 + 粗体 + 分栏）
   async function parseFileToDoc(file) {
     const buf = await file.arrayBuffer();
     const pdfDoc = await window.pdfjsLib.getDocument({ data: buf }).promise;
@@ -1724,30 +1894,54 @@
 
       const textContent = await page.getTextContent();
       const items = textContent.items;
-      const colors = await extractTextColors(page);
+      const assets = await extractPageAssets(page, pageW, pageH);
 
-      const blocks = [];
+      let blocks = [];
       items.forEach((it, idx) => {
         if (!it.str || !it.str.trim()) return;
-        const m = it.transform; // [a, b, c, d, e, f]
-        // 字号：transform 的缩放分量（a/d），pdf.js 通常 a=fontSize, d=fontSize
+        const m = it.transform;
         const fontSize = Math.round((Math.abs(m[0]) || Math.abs(m[3]) || it.height || 10) * 100) / 100;
-        const x = m[4];
-        const y = m[5]; // pdf.js y 是从页面底部算起
+        const x = m[4], y = m[5];
         const w = it.width || (fontSize * it.str.length * 0.5);
         const h = it.height || fontSize;
-        // 粗体判断：fontName 含 Bold/Black/Heavy 等
         const isBold = /bold|black|heavy|extrabold|semibold|demibold/i.test(it.fontName || '');
-        const color = colors[idx] || [0,0,0];
+        const color = assets.colors[idx] || [0,0,0];
+        // 旋转文本（水印）：transform 的 b/c 分量非零
+        const isRotated = Math.abs(m[1]) > 0.01 || Math.abs(m[2]) > 0.01;
         blocks.push({
-          id: `b_${p}_${idx}`,
-          type: 'text',
+          id: `b_${p}_${idx}`, type: 'text',
           bbox: { x, y, w, h },
-          style: { fontSize, fontWeight: isBold ? 700 : 400, color: `rgb(${color[0]},${color[1]},${color[2]})` },
+          style: { fontSize, fontWeight: isBold ? 700 : 400, color: rgbCss(color) },
           text: it.str,
+          meta: { confidence: 1.0, isWatermark: isRotated }
+        });
+      });
+
+      // 加入图形块
+      assets.shapes.forEach((s, i) => {
+        blocks.push({
+          id: `s_${p}_${i}`, type: s.type,
+          bbox: s.type === 'line' ? { x:Math.min(s.x1,s.x2), y:Math.min(s.y1,s.y2), w:Math.abs(s.x2-s.x1), h:Math.max(Math.abs(s.y2-s.y1), s.lineWidth) } : { x:s.x, y:s.y, w:s.w, h:s.h },
+          style: { fill: s.fill ? rgbCss(s.fill) : null, stroke: s.stroke ? rgbCss(s.stroke) : null, lineWidth: s.lineWidth },
+          shape: s,
           meta: { confidence: 1.0 }
         });
       });
+      // 加入图片块
+      assets.images.forEach((img, i) => {
+        blocks.push({
+          id: `i_${p}_${i}`, type: 'image',
+          bbox: { x:img.x, y:img.y, w:img.w, h:img.h },
+          src: img.src,
+          meta: { confidence: 1.0 }
+        });
+      });
+
+      // 阅读顺序排序（只对文本块，图形图片保持原位）
+      const textBlocks = blocks.filter(b => b.type === 'text');
+      const otherBlocks = blocks.filter(b => b.type !== 'text');
+      const sortedText = sortReadingOrder(textBlocks, pageW);
+      blocks = [...sortedText, ...otherBlocks];
 
       doc.pages.push({ index: p - 1, width: pageW, height: pageH, blocks });
     }
@@ -1762,37 +1956,95 @@
 
     const pageW = doc.page.width;
     const pageH = doc.page.height;
-    // 用 pt 作为 CSS px 单位，再整体 scale 到容器宽度（210mm）
     const cssScale = (210 * 96 / 25.4) / pageW;
 
     doc.pages.forEach((page, pi) => {
       const pageEl = document.createElement('div');
+      pageEl.className = 'fidelity-page';
+      pageEl.dataset.pageIndex = pi;
       pageEl.style.cssText = `position:relative;width:${pageW}px;height:${pageH}px;background:#fff;`;
       pageEl.style.transformOrigin = 'top left';
       pageEl.style.transform = `scale(${cssScale})`;
-      // 外层用缩放后的尺寸占位
       const wrapper = document.createElement('div');
       wrapper.style.cssText = `position:relative;width:${pageW*cssScale}px;height:${pageH*cssScale}px;margin:0 auto 8px;background:#fff;box-shadow:0 2px 12px rgba(0,0,0,.1);`;
 
       page.blocks.forEach(b => {
-        if (b.type !== 'text') return;
-        const el = document.createElement('div');
         const { x, y, w, h } = b.bbox;
-        // pdf.js y 从底部算，CSS y 从顶部算 → top = pageH - y - h
-        // overflow:visible 避免回退字体比 PDF 字体宽时文字被裁切；nowrap 保持单行
-        el.style.cssText = `position:absolute;left:${x}px;top:${pageH - y - h}px;` +
-          `min-width:${w}px;height:${h}px;` +
-          `font-size:${b.style.fontSize}px;font-weight:${b.style.fontWeight};color:${b.style.color};` +
-          `line-height:1;white-space:nowrap;overflow:visible;` +
-          `display:flex;align-items:center;`;
-        el.textContent = b.text;
-        el.dataset.blockId = b.id;
-        el.contentEditable = 'false';
-        pageEl.appendChild(el);
+        const top = pageH - y - h;
+        if (b.type === 'text') {
+          const el = document.createElement('div');
+          el.className = 'fidelity-text';
+          el.style.cssText = `position:absolute;left:${x}px;top:${top}px;` +
+            `min-width:${w}px;height:${h}px;` +
+            `font-size:${b.style.fontSize}px;font-weight:${b.style.fontWeight};color:${b.style.color};` +
+            `line-height:1;white-space:nowrap;overflow:visible;` +
+            `display:flex;align-items:center;` +
+            (b.meta?.isWatermark ? 'opacity:0.3;pointer-events:none;' : '');
+          el.textContent = b.text;
+          el.dataset.blockId = b.id;
+          el.contentEditable = 'false';
+          // 双击进入编辑
+          el.addEventListener('dblclick', () => startEditBlock(el, b, page));
+          pageEl.appendChild(el);
+        } else if (b.type === 'rect') {
+          const el = document.createElement('div');
+          el.style.cssText = `position:absolute;left:${x}px;top:${top}px;width:${w}px;height:${h}px;` +
+            (b.style.fill ? `background:${b.style.fill};` : '') +
+            (b.style.stroke ? `border:${b.style.lineWidth}px solid ${b.style.stroke};box-sizing:border-box;` : '');
+          pageEl.appendChild(el);
+        } else if (b.type === 'line') {
+          const s = b.shape;
+          const el = document.createElement('div');
+          const isHoriz = Math.abs(s.y1 - s.y2) < 1;
+          if (isHoriz) {
+            el.style.cssText = `position:absolute;left:${Math.min(s.x1,s.x2)}px;top:${pageH - s.y1 - s.lineWidth/2}px;width:${Math.abs(s.x2-s.x1)}px;height:${s.lineWidth}px;background:${b.style.stroke};`;
+          } else {
+            el.style.cssText = `position:absolute;left:${s.x1 - s.lineWidth/2}px;top:${Math.min(top, pageH - Math.max(s.y1,s.y2))}px;width:${s.lineWidth}px;height:${Math.abs(s.y2-s.y1)}px;background:${b.style.stroke};`;
+          }
+          pageEl.appendChild(el);
+        } else if (b.type === 'image' && b.src) {
+          const el = document.createElement('img');
+          el.src = b.src;
+          el.style.cssText = `position:absolute;left:${x}px;top:${top}px;width:${w}px;height:${h}px;object-fit:fill;`;
+          el.draggable = false;
+          pageEl.appendChild(el);
+        }
       });
       wrapper.appendChild(pageEl);
       canvas.appendChild(wrapper);
     });
+  }
+
+  // 块编辑：双击文本块进入编辑
+  function startEditBlock(el, block, page) {
+    pushUndo();
+    el.contentEditable = 'true';
+    el.focus();
+    // 选中全部文字
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+    el.style.outline = '1.5px dashed #0d9488';
+    el.style.outlineOffset = '2px';
+    const finish = () => {
+      el.contentEditable = 'false';
+      el.style.outline = '';
+      const newText = el.textContent;
+      if (newText !== block.text) {
+        block.text = newText;
+        saveDocLocal();
+      }
+      el.removeEventListener('blur', finish);
+      el.removeEventListener('keydown', onKey);
+    };
+    const onKey = (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); el.blur(); }
+      if (e.key === 'Escape') { el.textContent = block.text; el.blur(); }
+    };
+    el.addEventListener('blur', finish);
+    el.addEventListener('keydown', onKey);
   }
 
   // 切换渲染模式
@@ -1801,6 +2053,9 @@
     const canvas = document.getElementById('fidelityCanvas');
     const btn = document.getElementById('fidelityModeBtn');
     const resumeEl = document.getElementById('resume');
+    const undoBtn = document.getElementById('fidelityUndoBtn');
+    const redoBtn = document.getElementById('fidelityRedoBtn');
+    const exportBtn = document.getElementById('fidelityExportBtn');
     if (renderMode === 'reflow') {
       if (!currentDoc) { showToast('请先在上传简历时选择「1:1 保真载入」', 'warn'); return; }
       renderMode = 'fidelity';
@@ -1810,8 +2065,11 @@
       resumeEl.style.height = 'auto';
       btn.textContent = ' 重排模式';
       btn.style.background = '#0891b2';
+      if (undoBtn) undoBtn.style.display = '';
+      if (redoBtn) redoBtn.style.display = '';
+      if (exportBtn) exportBtn.style.display = '';
       renderDocFidelity(currentDoc);
-      showToast('已切换到保真模式（按 PDF 原始版面 1:1 渲染）', 'info');
+      showToast('已切换到保真模式（双击文字可编辑）', 'info');
     } else {
       renderMode = 'reflow';
       inner.style.display = '';
@@ -1820,6 +2078,9 @@
       resumeEl.style.height = '';
       btn.textContent = ' 保真模式';
       btn.style.background = '#0d9488';
+      if (undoBtn) undoBtn.style.display = 'none';
+      if (redoBtn) redoBtn.style.display = 'none';
+      if (exportBtn) exportBtn.style.display = 'none';
       showToast('已切换到重排模式（套用编辑器模板）', 'info');
     }
   }
@@ -1829,12 +2090,51 @@
   window.renderDocFidelity = renderDocFidelity;
   window.toggleRenderMode = toggleRenderMode;
   window.loadFidelityMode = loadFidelityMode;
+  window.undoFidelity = undoFidelity;
+  window.redoFidelity = redoFidelity;
 
   // 从上传弹窗直接进入保真模式
   function loadFidelityMode() {
     if (!currentDoc) { showToast('请先上传 PDF 文件', 'warn'); return; }
     document.getElementById('uploadModal').classList.remove('active');
     if (renderMode !== 'fidelity') toggleRenderMode();
+  }
+
+  // 导出保真模式为 PDF（复用 Renderer，html2canvas + jsPDF）
+  async function exportFidelityPDF() {
+    if (!currentDoc) { showToast('请先在保真模式下载入简历', 'warn'); return; }
+    showToast('正在生成 PDF，请稍候...', 'info');
+    try {
+      const { jsPDF } = window.jspdf || window;
+      const html2canvas = window.html2canvas;
+      if (!jsPDF || !html2canvas) throw new Error('导出依赖未加载（jsPDF/html2canvas）');
+
+      const pageW = currentDoc.page.width;
+      const pageH = currentDoc.page.height;
+      const pdf = new jsPDF({ unit: 'pt', format: [pageW, pageH], orientation: pageW > pageH ? 'landscape' : 'portrait' });
+
+      const pages = document.querySelectorAll('#fidelityCanvas .fidelity-page');
+      for (let i = 0; i < pages.length; i++) {
+        const pageEl = pages[i];
+        const canvas = await html2canvas(pageEl, { scale: 2, backgroundColor: '#ffffff', useCORS: true, logging: false });
+        const imgData = canvas.toDataURL('image/jpeg', 0.95);
+        if (i > 0) pdf.addPage([pageW, pageH], pageW > pageH ? 'landscape' : 'portrait');
+        pdf.addImage(imgData, 'JPEG', 0, 0, pageW, pageH);
+      }
+      const name = (currentDoc.source.name || 'resume').replace(/\.pdf$/i, '');
+      pdf.save(`${name}_保真版.pdf`);
+      showToast('PDF 导出成功', 'success');
+    } catch (e) {
+      showToast('导出失败：' + e.message, 'error');
+    }
+  }
+  window.exportFidelityPDF = exportFidelityPDF;
+
+  // 初始化：尝试从 localStorage 恢复
+  const savedDoc = loadDocLocal();
+  if (savedDoc && savedDoc.version === 2) {
+    currentDoc = savedDoc;
+    document.getElementById('fidelityModeBtn').style.display = '';
   }
 
   async function parseFile(file) {
@@ -2852,6 +3152,8 @@ ${JSON.stringify(input)}
       if (isPdf) {
         try {
           currentDoc = await parseFileToDoc(f);
+          undoStack = []; redoStack = [];
+          saveDocLocal();
           document.getElementById('fidelityModeBtn').style.display = '';
           document.getElementById('fidelityLoadBtn').style.display = '';
           tip.textContent = (tip.textContent ? tip.textContent + ' | ' : '') + '已生成 1:1 保真版面';
