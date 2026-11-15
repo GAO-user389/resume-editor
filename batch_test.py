@@ -56,23 +56,37 @@ def parse_file(pdf_path):
             all_heights = [w['bottom']-w['top'] for w in words if w['bottom']-w['top']>0]
             all_med_h = statistics.median(all_heights) if all_heights else 3
             y_tol = max(2, all_med_h * 0.5)
+            # 用基于相邻 Y 距离的行分组替代 round(top/y_tol) 网格分组
+            words_by_y = sorted(words, key=lambda w: w['top'])
+            row_id = {}
+            cur_id = 0; cur_y = None
+            for w in words_by_y:
+                y = w['top']
+                if cur_y is None or abs(y - cur_y) >= y_tol:
+                    cur_id += 1; cur_y = y
+                row_id[id(w)] = cur_id
             spanning_bands = set()
             if gutter is not None:
                 y_groups = {}
                 for w in words:
-                    yk = round(w['top'] / y_tol)
+                    yk = row_id[id(w)]
                     y_groups.setdefault(yk, []).append(w)
                 for yk, band in y_groups.items():
                     has_left = any(w['x0'] < gutter for w in band)
                     has_right = any(w['x0'] >= gutter for w in band)
                     if has_left and has_right: spanning_bands.add(yk)
+                # 单栏误判防护：横跨 gutter 的行占总行数 > 50% 说明是单栏长行布局
+                total_rows = len(y_groups)
+                if total_rows > 0 and len(spanning_bands) / total_rows > 0.5:
+                    gutter = None
+                    spanning_bands.clear()
             left = []
             right = []
             if gutter is None:
                 left = words
             else:
                 for w in words:
-                    yk = round(w['top'] / y_tol)
+                    yk = row_id[id(w)]
                     if yk in spanning_bands:
                         left.append(w)
                     elif w['x0'] < gutter:

@@ -25,7 +25,7 @@ RATE_GLOBAL_PER_DAY = 1000      # 全站 AI 接口每日总调用上限
 # ========== 输入防护 ==========
 MAX_INPUT_LENGTH = 5000         # 单次输入最大字符数（JD + 简历 + prompt 合并后）
 MAX_TOKENS = 2000               # 调用大模型时的 max_tokens
-AI_TIMEOUT = 30                 # AI 接口超时时间（秒）
+AI_TIMEOUT = 60                 # AI 接口超时时间（秒）—— OCR/视觉识别需更长时间
 
 # ========== AI 模型配置 ==========
 # 默认使用智谱 GLM-4-Flash（免费），生产可切 GLM-4-Plus

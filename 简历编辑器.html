@@ -1706,18 +1706,41 @@
           const allHeights = items.map(it => it.height || 0).filter(h => h > 0);
           const allMedianH = allHeights.length ? [...allHeights].sort((a, b) => a - b)[Math.floor(allHeights.length / 2)] : 3;
           const yTol = Math.max(2, allMedianH * 0.5);
+
+          // 修复：用基于相邻 Y 距离的行分组替代 round(y/yTol) 网格分组，
+          // 避免同一行内容因 Y 坐标微小差异（如 2px）被 round 边界拆分到不同组
+          const itemsByY = items.slice().sort((a, b) => a.transform[5] - b.transform[5]);
+          const itemRowId = new Map();
+          let curRowId = 0, curRowY = null;
+          for (const it of itemsByY) {
+            const y = it.transform[5];
+            if (curRowY === null || Math.abs(y - curRowY) >= yTol) {
+              curRowId++;
+              curRowY = y;
+            }
+            itemRowId.set(it, curRowId);
+          }
+
           const spanningBands = new Set();
           if (gutter !== null) {
             const yGroups = {};
             for (const it of items) {
-              const yKey = Math.round(it.transform[5] / yTol);
+              const yKey = itemRowId.get(it);
               (yGroups[yKey] = yGroups[yKey] || []).push(it);
             }
             for (const yKey in yGroups) {
               const bandItems = yGroups[yKey];
               const hasLeft = bandItems.some(it => it.transform[4] < gutter);
               const hasRight = bandItems.some(it => it.transform[4] >= gutter);
-              if (hasLeft && hasRight) spanningBands.add(yKey);
+              if (hasLeft && hasRight) spanningBands.add(Number(yKey));
+            }
+            // 修复：单栏误判防护 —— 如果横跨 gutter 的行占总行数 > 50%，
+            // 说明是单栏长行布局（内容只是自然换行超过 gutter 位置），不是真双栏。
+            // 真双栏中大部分行应只在左栏或右栏，而非横跨 gutter。
+            const totalRows = Object.keys(yGroups).length;
+            if (totalRows > 0 && spanningBands.size / totalRows > 0.5) {
+              gutter = null;
+              spanningBands.clear();
             }
           }
 
@@ -1728,7 +1751,7 @@
             leftItems.push(...items);
           } else {
             for (const it of items) {
-              const yKey = Math.round(it.transform[5] / yTol);
+              const yKey = itemRowId.get(it);
               if (spanningBands.has(yKey)) {
                 leftItems.push(it);
               } else if (it.transform[4] < gutter) {
@@ -1877,17 +1900,39 @@
       const ctx = canvas.getContext('2d');
       await page.render({ canvasContext: ctx, viewport }).promise;
       const base64 = canvas.toDataURL('image/jpeg', 0.85).split(',')[1];
-      const resp = await fetch('/api/ai/ocr', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ image_base64: base64 }),
-      });
+      // 前端超时保护：90 秒（后端超时 60 秒 + 网络缓冲）
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 90000);
+      let resp;
+      try {
+        resp = await fetch('/api/ai/ocr', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ image_base64: base64 }),
+          signal: controller.signal,
+        });
+      } catch (e) {
+        clearTimeout(timer);
+        if (e.name === 'AbortError') {
+          throw new Error('AI 识别超时（页面内容较复杂），请稍后重试或直接粘贴文本');
+        }
+        throw new Error('网络连接失败，请检查网络后重试');
+      }
+      clearTimeout(timer);
       if (resp.ok) {
         const data = await resp.json();
         if (data.content) ocrPages.push(data.content);
       } else {
         const err = await resp.json().catch(() => ({}));
-        throw new Error(err.detail || 'AI 识别失败');
+        const detail = err.detail || '';
+        if (resp.status === 403) {
+          throw new Error(detail || '今日 AI 识别次数已用完');
+        } else if (resp.status === 504) {
+          throw new Error(detail || 'AI 识别超时，请稍后重试');
+        } else if (resp.status === 429) {
+          throw new Error(detail || 'AI 服务繁忙，请稍后再试');
+        }
+        throw new Error(detail || 'AI 识别失败');
       }
     }
     return ocrPages.join('\n').trim();
