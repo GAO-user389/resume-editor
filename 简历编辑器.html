@@ -1886,11 +1886,15 @@
     return true;
   }
 
-  // 修复：AI 版式识别兜底 —— 渲染 PDF 每页为图片，调用 GLM-4V 视觉模型解析
+  // 修复：AI 版式识别兜底 —— 渲染 PDF 每页为图片，拼接成一张长图后调用一次 GLM-4V
+  // 关键：多页只调用一次 OCR，只消耗 1 次免费次数（之前每页各调一次会快速耗尽额度）
   async function ocrParsePdf(file) {
     const buf = await file.arrayBuffer();
     const doc = await window['pdfjsLib'].getDocument({ data: buf }).promise;
-    const ocrPages = [];
+
+    // 1. 先把所有页渲染到独立 canvas
+    const pageCanvases = [];
+    let totalHeight = 0, maxWidth = 0;
     for (let i = 1; i <= doc.numPages; i++) {
       const page = await doc.getPage(i);
       const viewport = page.getViewport({ scale: 1.5 });
@@ -1899,43 +1903,66 @@
       canvas.height = viewport.height;
       const ctx = canvas.getContext('2d');
       await page.render({ canvasContext: ctx, viewport }).promise;
-      const base64 = canvas.toDataURL('image/jpeg', 0.85).split(',')[1];
-      // 前端超时保护：90 秒（后端超时 60 秒 + 网络缓冲）
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 90000);
-      let resp;
-      try {
-        resp = await fetch('/api/ai/ocr', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ image_base64: base64 }),
-          signal: controller.signal,
-        });
-      } catch (e) {
-        clearTimeout(timer);
-        if (e.name === 'AbortError') {
-          throw new Error('AI 识别超时（页面内容较复杂），请稍后重试或直接粘贴文本');
-        }
-        throw new Error('网络连接失败，请检查网络后重试');
-      }
-      clearTimeout(timer);
-      if (resp.ok) {
-        const data = await resp.json();
-        if (data.content) ocrPages.push(data.content);
-      } else {
-        const err = await resp.json().catch(() => ({}));
-        const detail = err.detail || '';
-        if (resp.status === 403) {
-          throw new Error(detail || '今日 AI 识别次数已用完');
-        } else if (resp.status === 504) {
-          throw new Error(detail || 'AI 识别超时，请稍后重试');
-        } else if (resp.status === 429) {
-          throw new Error(detail || 'AI 服务繁忙，请稍后再试');
-        }
-        throw new Error(detail || 'AI 识别失败');
-      }
+      pageCanvases.push(canvas);
+      totalHeight += viewport.height;
+      maxWidth = Math.max(maxWidth, viewport.width);
     }
-    return ocrPages.join('\n').trim();
+
+    // 2. 纵向拼接成一张长图（白底）
+    const merged = document.createElement('canvas');
+    merged.width = maxWidth;
+    merged.height = totalHeight;
+    const mctx = merged.getContext('2d');
+    mctx.fillStyle = '#ffffff';
+    mctx.fillRect(0, 0, maxWidth, totalHeight);
+    let y = 0;
+    for (const c of pageCanvases) { mctx.drawImage(c, 0, y); y += c.height; }
+
+    // 3. 控制 base64 体积 ≤ 5MB：先降质量，再缩放
+    let quality = 0.85;
+    let base64 = merged.toDataURL('image/jpeg', quality).split(',')[1];
+    while (base64.length > 5 * 1024 * 1024 && quality > 0.3) {
+      quality -= 0.1;
+      base64 = merged.toDataURL('image/jpeg', quality).split(',')[1];
+    }
+    if (base64.length > 5 * 1024 * 1024) {
+      const scale = Math.sqrt((5 * 1024 * 1024 * 0.85) / base64.length);
+      const sc = document.createElement('canvas');
+      sc.width = Math.floor(merged.width * scale);
+      sc.height = Math.floor(merged.height * scale);
+      sc.getContext('2d').drawImage(merged, 0, 0, sc.width, sc.height);
+      base64 = sc.toDataURL('image/jpeg', 0.8).split(',')[1];
+    }
+
+    // 4. 只调用一次 OCR（消耗 1 次免费次数）
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 90000);
+    let resp;
+    try {
+      resp = await fetch('/api/ai/ocr', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ image_base64: base64 }),
+        signal: controller.signal,
+      });
+    } catch (e) {
+      clearTimeout(timer);
+      if (e.name === 'AbortError') {
+        throw new Error('AI 识别超时（页面内容较复杂），请稍后重试或直接粘贴文本');
+      }
+      throw new Error('网络连接失败，请检查网络后重试');
+    }
+    clearTimeout(timer);
+    if (resp.ok) {
+      const data = await resp.json();
+      return (data.content || '').trim();
+    }
+    const err = await resp.json().catch(() => ({}));
+    const detail = err.detail || '';
+    if (resp.status === 403) throw new Error(detail || '今日 AI 识别次数已用完');
+    if (resp.status === 504) throw new Error(detail || 'AI 识别超时，请稍后重试');
+    if (resp.status === 429) throw new Error(detail || 'AI 服务繁忙，请稍后再试');
+    throw new Error(detail || 'AI 识别失败');
   }
 
   // 保存最近上传的文件，供「重新解析」按钮使用
@@ -2747,9 +2774,30 @@
           inlineDesc = parts.slice(2).join(' ');
         }
       }
-      // 合并行内描述 + 后续描述行，每行一个 bullet
+      // 合并行内描述 + 后续描述行
       const allDesc = [inlineDesc, extraDesc].filter(Boolean).join('\n');
-      const descLines = allDesc.split('\n').map(l => l.trim()).filter(Boolean);
+      const rawLines = allDesc.split('\n').map(l => l.trim()).filter(Boolean);
+
+      // 合并 PDF 折行导致的续行：
+      //   - 当前行不是 bullet 开头（• · ▮ - 数字.）
+      //   - 当前行不是「短标题：」形式的子标题
+      //   - 上一行未以句末标点（。！？；.）结尾
+      // 满足以上条件则把当前行拼接到上一行，避免一段内容被拆成多个小点
+      const descLines = [];
+      for (const l of rawLines) {
+        const isBulletStart = /^[•·▮\-\u2022]/.test(l) || /^\d+[\.、)]\s/.test(l);
+        const colonIdx = l.search(/[：:]/);
+        const isSubHeader = colonIdx > 0 && colonIdx < 12 && colonIdx < l.length * 0.4;
+        if (descLines.length > 0 && !isBulletStart && !isSubHeader) {
+          const prev = descLines[descLines.length - 1];
+          if (!/[。.!?！？；;]$/.test(prev)) {
+            descLines[descLines.length - 1] = prev + l;
+            continue;
+          }
+        }
+        descLines.push(l);
+      }
+
       const headerHtml = '<div class="exp-header"><div><span class="company" contenteditable="false">' + h(company) + '</span>' + (role ? '<span class="role">｜' + h(role) + '</span>' : '') + '</div>' + (date ? '<div class="date" contenteditable="false">' + h(date) + '</div>' : '') + '</div>';
       const descHtml = descLines.length > 0
         ? '<div class="exp-desc" contenteditable="false"><ul>' + descLines.map(l => '<li>' + h(l.replace(/^[•·\-\u2022]\s*/, '')) + '</li>').join('') + '</ul></div>'
