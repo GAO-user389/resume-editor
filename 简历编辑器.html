@@ -4012,15 +4012,20 @@ ${JSON.stringify(input)}
     if (!t) {
       t = document.createElement('div');
       t.id = '__toast__';
-      t.style.cssText = 'position:fixed;top:20px;left:50%;transform:translateX(-50%);z-index:99999;padding:12px 24px;border-radius:8px;color:#fff;font-size:14px;box-shadow:0 4px 20px rgba(0,0,0,0.2);opacity:0;transition:opacity .3s;max-width:80vw;text-align:center;';
+      t.style.cssText = 'position:fixed;top:20px;left:50%;transform:translateX(-50%);z-index:99999;padding:12px 24px;border-radius:8px;color:#fff;font-size:14px;box-shadow:0 4px 20px rgba(0,0,0,0.2);opacity:0;transition:opacity .3s, visibility .3s;max-width:80vw;text-align:center;pointer-events:none;visibility:hidden;';
       document.body.appendChild(t);
     }
     const colors = { info:'#1f6feb', error:'#dc2626', warn:'#d97706', success:'#059669' };
     t.style.background = colors[type] || colors.info;
     t.textContent = msg;
+    t.style.visibility = 'visible';
     t.style.opacity = '1';
     clearTimeout(t._timer);
-    t._timer = setTimeout(() => { t.style.opacity = '0'; }, 3500);
+    clearTimeout(t._hideTimer);
+    t._timer = setTimeout(() => {
+      t.style.opacity = '0';
+      t._hideTimer = setTimeout(() => { t.style.visibility = 'hidden'; }, 350);
+    }, 3500);
   }
 
   /* ---------- 剩余 AI 次数展示 ---------- */
