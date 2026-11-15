@@ -1732,6 +1732,7 @@
     const colors = [];
     const shapes = [];
     const images = [];
+    const argSamples = []; // 调试：采样前20个op的args类型
     let curFill = [0,0,0], curStroke = [0,0,0];
     let curLineWidth = 1;
     // CTM: 当前变换矩阵 [a,b,c,d,e,f]，默认单位矩阵
@@ -1748,6 +1749,10 @@
     for (let i = 0; i < fnArr.length; i++) {
       const fn = fnArr[i];
       let args = argsArr[i];
+      const rawArgsType = args === null ? 'null' : (Array.isArray(args) ? 'Array['+args.length+']' : (typeof args === 'string' ? 'string['+args.length+']' : (args && typeof args.length === 'number' ? args.constructor.name+'['+args.length+']' : typeof args)));
+      if (i < 25 || fn === 44 || fn === 59 || fn === 91 || fn === 20) {
+        argSamples.push({ i, fn, rawType: rawArgsType, sample: args && typeof args.length === 'number' ? Array.from(args).slice(0,6).map(v => typeof v === 'string' ? JSON.stringify(v).substring(0,40) : (typeof v === 'number' ? v : (v && typeof v.length==='number' ? '['+v.length+']' : typeof v))) : String(args) });
+      }
       // 兼容：args 可能是 TypedArray，统一转普通数组
       if (args && !Array.isArray(args) && typeof args.length === 'number') args = Array.from(args);
       // 兼容：有些版本 args 是 [arg] 包裹形式，解包
@@ -1872,7 +1877,7 @@
       const f = fnArr[i];
       fnFreq[f] = (fnFreq[f] || 0) + 1;
     }
-    window.__fidelityDebug = { colorsLen: colors.length, shapesLen: shapes.length, imagesLen: images.length, fnFreq, opsRef: { save: OPS.save, restore: OPS.restore, transform: OPS.transform, setFillRGBColor: OPS.setFillRGBColor, setFillColor: OPS.setFillColor, rectangle: OPS.rectangle, constructPath: OPS.constructPath, fill: OPS.fill, stroke: OPS.stroke, showText: OPS.showText, showSpacedText: OPS.showSpacedText, paintImageXObject: OPS.paintImageXObject }, errors };
+    window.__fidelityDebug = { colorsLen: colors.length, shapesLen: shapes.length, imagesLen: images.length, fnFreq, argSamples: argSamples.slice(0, 40), opsRef: { save: OPS.save, restore: OPS.restore, transform: OPS.transform, setFillRGBColor: OPS.setFillRGBColor, setFillColor: OPS.setFillColor, rectangle: OPS.rectangle, constructPath: OPS.constructPath, fill: OPS.fill, stroke: OPS.stroke, showText: OPS.showText, showSpacedText: OPS.showSpacedText, paintImageXObject: OPS.paintImageXObject }, errors };
     return { colors, shapes, images };
   }
 
