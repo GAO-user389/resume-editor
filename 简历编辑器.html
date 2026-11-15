@@ -1880,16 +1880,28 @@
                 if (typeof page.commonObjs.get === 'function') imgObj = page.commonObjs.get(objName);
                 else imgObj = page.commonObjs[objName];
               }
-              if (imgObj && (imgObj.width || imgObj.height || imgObj.data || imgObj.src)) {
+              if (imgObj && (imgObj.width || imgObj.height || imgObj.data || imgObj.src || imgObj.bitmap)) {
                 const p1 = applyCTM(0, 0);
                 const iw = imgObj.width || 1;
                 const ih = imgObj.height || 1;
                 const p2 = applyCTM(iw, ih);
                 let dataUrl = null;
-                // 路径1：已有 canvas 或 data
+                // 路径1：已有 canvas
                 if (imgObj.canvas) {
                   dataUrl = imgObj.canvas.toDataURL('image/png');
-                } else if (imgObj.data && iw > 1 && ih > 1) {
+                }
+                // 路径2：ImageBitmap（新版 pdf.js）
+                if (!dataUrl && imgObj.bitmap) {
+                  try {
+                    const cv = document.createElement('canvas');
+                    cv.width = iw; cv.height = ih;
+                    const ctx = cv.getContext('2d');
+                    ctx.drawImage(imgObj.bitmap, 0, 0, iw, ih);
+                    dataUrl = cv.toDataURL('image/png');
+                  } catch (e) { console.warn('[fidelity] ImageBitmap draw:', e.message); }
+                }
+                // 路径3：原始 data buffer（老版 pdf.js）
+                if (!dataUrl && imgObj.data && iw > 1 && ih > 1) {
                   try {
                     const cv = document.createElement('canvas');
                     cv.width = iw; cv.height = ih;
