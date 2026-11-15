@@ -8,12 +8,13 @@ PDFS = glob.glob(os.path.join(ATTACH_DIR, '*.pdf'))
 
 SECTION_MARKERS = [
     {'key': 'education',  'pats': ['教育背景','教育经历','学习经历','学历','EDUCATION','Education']},
-    {'key': 'internship', 'pats': ['实习和工作经历','实习经历','实习经验','工作经历','工作经验','实践经历','校园经历','校园活动','社会实践','工作实践','INTERNSHIP','Internship','EXPERIENCE','Experience','WORK EXPERIENCE','Work Experience']},
+    {'key': 'internship', 'pats': ['实习和工作经历','实习经历','实习经验','工作经历','工作经验','实践经历','校园经历','校园活动','校园实践','社会实践','工作实践','科研经历','科研项目','INTERNSHIP','Internship','EXPERIENCE','Experience','WORK EXPERIENCE','Work Experience']},
     {'key': 'projects',   'pats': ['项目经历','项目经验','PROJECTS','Projects','PROJECT','Project']},
-    {'key': 'skills',     'pats': ['技能与证书','专业技能','技能','证书','荣誉奖项','获得荣誉','奖项荣誉','获奖经历','个人荣誉','荣誉证书','自我评价','个人优势','个人简介','兴趣爱好','SKILLS','Skills','CERTIFICATE','Certificate','Certificates']},
+    {'key': 'skills',     'pats': ['技能与证书','专业技能','技能','技术能力','技术栈','证书','荣誉奖项','获得荣誉','奖项荣誉','获奖经历','获奖情况','个人荣誉','荣誉证书','自我评价','个人优势','个人简介','个人总结','兴趣爱好','论文发表','学术成果','SKILLS','Skills','CERTIFICATE','Certificate','Certificates']},
 ]
 ALL_MARKER_WORDS = [p for m in SECTION_MARKERS for p in m['pats']]
 HEADER_MODIFIERS = ['核心','专业','个人','主要','基本','相关','通用','其他','各类','多项','特长','概述','简介','素质']
+SEMANTIC_HEADING_KW = ['经历','经验','技能','能力','荣誉','奖项','证书','总结','项目','教育','学历','论文','成果','实践','活动']
 
 def escape_reg(s): return re.escape(s)
 
@@ -34,22 +35,50 @@ def parse_file(pdf_path):
                 if re.match(r'^(\d[a-z]|[a-z]\d)-?$', s): return True
                 return False
             pw = page.width
+            ph = page.height
             words = [w for w in words if w['x0'] >= -5 and w['x0'] <= pw + 5 and not is_garbage(w['text'])]
             if not words:
                 continue
-            xs = sorted(w['x0'] for w in words)
+            # 仅用页面中部(15%~85%高度)的 words 判定 gutter，避开横跨两栏的头部
+            mid_words = [w for w in words if ph * 0.15 < w['top'] < ph * 0.85]
+            gutter_src = mid_words if len(mid_words) > 10 else words
+            xs = sorted(w['x0'] for w in gutter_src)
             gutter = None
             if len(xs) > 20:
-                pw = page.width
                 max_gap = 0; gap_at = None
                 for k in range(1, len(xs)):
                     gap = xs[k] - xs[k-1]
                     mid = (xs[k] + xs[k-1]) / 2
-                    if pw*0.3 < mid < pw*0.7 and gap > max_gap:
+                    if pw*0.25 < mid < pw*0.75 and gap > max_gap:
                         max_gap = gap; gap_at = mid
-                if max_gap > pw * 0.08: gutter = gap_at
-            left = [w for w in words if w['x0'] < gutter] if gutter else words
-            right = [w for w in words if w['x0'] >= gutter] if gutter else []
+                if max_gap > pw * 0.04: gutter = gap_at
+            # 含日期且横跨两栏的行，整体并入左栏
+            all_heights = [w['bottom']-w['top'] for w in words if w['bottom']-w['top']>0]
+            all_med_h = statistics.median(all_heights) if all_heights else 3
+            y_tol = max(2, all_med_h * 0.5)
+            spanning_bands = set()
+            if gutter is not None:
+                y_groups = {}
+                for w in words:
+                    yk = round(w['top'] / y_tol)
+                    y_groups.setdefault(yk, []).append(w)
+                for yk, band in y_groups.items():
+                    has_left = any(w['x0'] < gutter for w in band)
+                    has_right = any(w['x0'] >= gutter for w in band)
+                    if has_left and has_right: spanning_bands.add(yk)
+            left = []
+            right = []
+            if gutter is None:
+                left = words
+            else:
+                for w in words:
+                    yk = round(w['top'] / y_tol)
+                    if yk in spanning_bands:
+                        left.append(w)
+                    elif w['x0'] < gutter:
+                        left.append(w)
+                    else:
+                        right.append(w)
             for col in (left, right):
                 if not col: continue
                 heights = [w['bottom']-w['top'] for w in col if w['bottom']-w['top']>0]
@@ -93,6 +122,9 @@ def is_section_marker_line(line):
     t = re.sub(r'[\s·•|｜\-–—:：、,，.。（）()【】\[\]《》<>]', '', t)
     if len(t) <= 1: return True
     if len(orig) < 15 and t in HEADER_MODIFIERS: return True
+    # 动态语义兜底
+    if len(orig) <= 12 and not re.search(r'[，,。.；;：:]$', orig):
+        if any(kw in orig for kw in SEMANTIC_HEADING_KW): return True
     return False
 
 # ===== splitResumeSections =====

@@ -746,6 +746,10 @@
       <div class="jd-section-title"><span class="num">2</span> 解析预览（确认后填入）</div>
       <div class="jd-field" style="margin-bottom:14px;">
         <textarea id="uploadedResumeText" style="min-height:180px;" placeholder="上传文件后，解析出的文本会显示在这里，你可以先检查再填入..."></textarea>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px;">
+          <span id="parseQualityTip" style="font-size:11px;color:#6b7280;"></span>
+          <button id="aiReparseBtn" class="file-btn" style="display:none;background:#FEF3C7;color:#92400E;border-color:#FCD34D;font-size:11px;padding:4px 10px;" onclick="reparseWithAI()">🔍 重新解析（AI版式识别）</button>
+        </div>
       </div>
 
       <div class="jd-section-title"><span class="num">3</span> 填入方式</div>
@@ -1634,11 +1638,12 @@
 
   // ------- 文件解析 -------
   // 板块关键词（全链路统一，避免三处列表漂移）
+  // 修复：症状B —— 扩展标题清单，覆盖「个人总结」「技术能力」「校园实践」等清单外措辞
   const SECTION_MARKERS = [
     { key: 'education',  pats: ['教育背景','教育经历','学习经历','学历','EDUCATION','Education'] },
-    { key: 'internship', pats: ['实习和工作经历','实习经历','实习经验','工作经历','工作经验','实践经历','校园经历','校园活动','社会实践','工作实践','INTERNSHIP','Internship','EXPERIENCE','Experience','WORK EXPERIENCE','Work Experience'] },
+    { key: 'internship', pats: ['实习和工作经历','实习经历','实习经验','工作经历','工作经验','实践经历','校园经历','校园活动','校园实践','社会实践','工作实践','科研经历','科研项目','INTERNSHIP','Internship','EXPERIENCE','Experience','WORK EXPERIENCE','Work Experience'] },
     { key: 'projects',   pats: ['项目经历','项目经验','PROJECTS','Projects','PROJECT','Project'] },
-    { key: 'skills',     pats: ['技能与证书','专业技能','技能','证书','荣誉奖项','获得荣誉','奖项荣誉','获奖经历','个人荣誉','荣誉证书','自我评价','个人优势','个人简介','兴趣爱好','SKILLS','Skills','CERTIFICATE','Certificate','Certificates'] },
+    { key: 'skills',     pats: ['技能与证书','专业技能','技能','技术能力','技术栈','证书','荣誉奖项','获得荣誉','奖项荣誉','获奖经历','获奖情况','个人荣誉','荣誉证书','自我评价','个人优势','个人简介','个人总结','兴趣爱好','论文发表','学术成果','SKILLS','Skills','CERTIFICATE','Certificate','Certificates'] },
   ];
   const ALL_MARKER_WORDS = SECTION_MARKERS.flatMap(m => m.pats);
 
@@ -1653,6 +1658,7 @@
           const page = await doc.getPage(i);
           const rawItems = (await page.getTextContent()).items;
           const pageWidth = page.getViewport({ scale: 1 }).width;
+          const pageHeight = page.getViewport({ scale: 1 }).height;
 
           // ---- 过滤垃圾文字 ----
           // 1) 页面边界外的 item（x<0 或 x>pageWidth）——BOSS直聘水印常放在负坐标
@@ -1674,26 +1680,64 @@
           });
 
           // ---- 双栏检测 ----
-          // 统计所有 item 的起始 X，若存在明显空白间隔（gutter），判定为双栏
-          const xs = items.map(it => it.transform[4]).sort((a, b) => a - b);
+          // 修复：症状A —— 扩大 gutter 搜索范围到 25%~75%，避免右栏偏窄/偏宽时漏检
+          // 修复：症状A —— 仅用页面中部(15%~85%高度)的 items 判定 gutter，避开横跨两栏的头部信息
+          const midItems = items.filter(it => {
+            const y = it.transform[5];
+            return y > pageHeight * 0.15 && y < pageHeight * 0.85;
+          });
+          const gutterXs = (midItems.length > 10 ? midItems : items).map(it => it.transform[4]).sort((a, b) => a - b);
           let gutter = null;
-          if (xs.length > 20) {
-            // 在页面宽度 35%~65% 区间寻找最大空白间隔
+          if (gutterXs.length > 20) {
             let maxGap = 0, gapAt = null;
-            for (let k = 1; k < xs.length; k++) {
-              const gap = xs[k] - xs[k - 1];
-              const midX = (xs[k] + xs[k - 1]) / 2;
-              if (midX > pageWidth * 0.3 && midX < pageWidth * 0.7 && gap > maxGap) {
+            for (let k = 1; k < gutterXs.length; k++) {
+              const gap = gutterXs[k] - gutterXs[k - 1];
+              const midX = (gutterXs[k] + gutterXs[k - 1]) / 2;
+              if (midX > pageWidth * 0.25 && midX < pageWidth * 0.75 && gap > maxGap) {
                 maxGap = gap; gapAt = midX;
               }
             }
-            // 最大间隔需显著大于正常字符间距（> 页面宽度 8%）
-            if (maxGap > pageWidth * 0.08) gutter = gapAt;
+            // 最大间隔需显著大于正常字符间距（> 页面宽度 4%）
+            if (maxGap > pageWidth * 0.04) gutter = gapAt;
           }
 
-          // 按栏分组：左栏 items、右栏 items
-          const leftItems = gutter === null ? items : items.filter(it => it.transform[4] < gutter);
-          const rightItems = gutter === null ? [] : items.filter(it => it.transform[4] >= gutter);
+          // 修复：症状A+C —— 横跨两栏的行整行并入左栏（同行左右续写不被拆分，日期与条目配对）
+          // 先按 Y 带分组，找出「横跨 gutter」的行（同一行既有左栏又有右栏内容）
+          const allHeights = items.map(it => it.height || 0).filter(h => h > 0);
+          const allMedianH = allHeights.length ? [...allHeights].sort((a, b) => a - b)[Math.floor(allHeights.length / 2)] : 3;
+          const yTol = Math.max(2, allMedianH * 0.5);
+          const spanningBands = new Set();
+          if (gutter !== null) {
+            const yGroups = {};
+            for (const it of items) {
+              const yKey = Math.round(it.transform[5] / yTol);
+              (yGroups[yKey] = yGroups[yKey] || []).push(it);
+            }
+            for (const yKey in yGroups) {
+              const bandItems = yGroups[yKey];
+              const hasLeft = bandItems.some(it => it.transform[4] < gutter);
+              const hasRight = bandItems.some(it => it.transform[4] >= gutter);
+              if (hasLeft && hasRight) spanningBands.add(yKey);
+            }
+          }
+
+          // 按栏分组：横跨 gutter 的行整体进左栏（同行左右合并），其余按 gutter 切分
+          const leftItems = [];
+          const rightItems = [];
+          if (gutter === null) {
+            leftItems.push(...items);
+          } else {
+            for (const it of items) {
+              const yKey = Math.round(it.transform[5] / yTol);
+              if (spanningBands.has(yKey)) {
+                leftItems.push(it);
+              } else if (it.transform[4] < gutter) {
+                leftItems.push(it);
+              } else {
+                rightItems.push(it);
+              }
+            }
+          }
 
           // 把一栏 items 转成行文本
           const columnToText = (colItems) => {
@@ -1785,6 +1829,10 @@
         }
         return extracted;
       } else if (name.endsWith('.docx') || name.endsWith('.doc')) {
+        // 修复：.doc 老格式 mammoth 不支持，返回友好提示
+        if (name.endsWith('.doc') && !name.endsWith('.docx')) {
+          throw new Error('该文件为 .doc 老格式，请用 Word 另存为 .docx 后再上传');
+        }
         const res = await window['mammoth'].extractRawText({ arrayBuffer: buf });
         return res.value.trim();
       } else {
@@ -1795,6 +1843,90 @@
       return '';
     }
   }
+
+  // 修复：质量闸门 —— 判断代码解析结果是否合格，不合格则提示用 AI 版式识别
+  function isExtractionOk(text) {
+    if (!text || text.trim().length < 100) return false;
+    const repl = (text.match(/�/g) || []).length;
+    if (repl / Math.max(text.length, 1) > 0.05) return false;
+    let valid = 0;
+    for (const ch of text) {
+      const code = ch.charCodeAt(0);
+      if (code < 128 || (ch >= '\u4e00' && ch <= '\u9fff')) valid++;
+    }
+    if (valid / Math.max(text.length, 1) < 0.6) return false;
+    const lines = text.split('\n').filter(l => l.trim());
+    if (lines.length) {
+      const longRatio = lines.filter(l => l.length > 200).length / lines.length;
+      if (longRatio > 0.3) return false;
+    }
+    return true;
+  }
+
+  // 修复：AI 版式识别兜底 —— 渲染 PDF 每页为图片，调用 GLM-4V 视觉模型解析
+  async function ocrParsePdf(file) {
+    const buf = await file.arrayBuffer();
+    const doc = await window['pdfjsLib'].getDocument({ data: buf }).promise;
+    const ocrPages = [];
+    for (let i = 1; i <= doc.numPages; i++) {
+      const page = await doc.getPage(i);
+      const viewport = page.getViewport({ scale: 1.5 });
+      const canvas = document.createElement('canvas');
+      canvas.width = viewport.width;
+      canvas.height = viewport.height;
+      const ctx = canvas.getContext('2d');
+      await page.render({ canvasContext: ctx, viewport }).promise;
+      const base64 = canvas.toDataURL('image/jpeg', 0.85).split(',')[1];
+      const resp = await fetch('/api/ai/ocr', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ image_base64: base64 }),
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        if (data.content) ocrPages.push(data.content);
+      } else {
+        const err = await resp.json().catch(() => ({}));
+        throw new Error(err.detail || 'AI 识别失败');
+      }
+    }
+    return ocrPages.join('\n').trim();
+  }
+
+  // 保存最近上传的文件，供「重新解析」按钮使用
+  let _lastResumeFile = null;
+  async function reparseWithAI() {
+    if (!_lastResumeFile) { alert('请先上传简历文件'); return; }
+    if (!_lastResumeFile.name.toLowerCase().endsWith('.pdf')) {
+      alert('AI 版式识别仅支持 PDF 文件');
+      return;
+    }
+    const tip = document.getElementById('parseQualityTip');
+    const btn = document.getElementById('aiReparseBtn');
+    tip.textContent = '正在调用 AI 版式识别，请稍候...';
+    tip.style.color = '#92400E';
+    btn.disabled = true;
+    try {
+      const text = await ocrParsePdf(_lastResumeFile);
+      document.getElementById('uploadedResumeText').value = text;
+      if (text && isExtractionOk(text)) {
+        tip.textContent = '✓ AI 版式识别完成，解析质量良好';
+        tip.style.color = '#059669';
+      } else if (text) {
+        tip.textContent = '⚠ AI 识别结果质量一般，建议手动检查或直接粘贴文本';
+        tip.style.color = '#d97706';
+      } else {
+        tip.textContent = '该文件无法自动解析，请直接粘贴简历文本内容';
+        tip.style.color = '#dc2626';
+      }
+    } catch (e) {
+      tip.textContent = 'AI 识别失败：' + e.message;
+      tip.style.color = '#dc2626';
+    } finally {
+      btn.disabled = false;
+    }
+  }
+  window.reparseWithAI = reparseWithAI;
 
   async function handleJDUpload(input) {
     const f = input.files[0]; if (!f) return;
@@ -2289,13 +2421,35 @@
   document.getElementById('resumeUploadFile').addEventListener('change', async function() {
     const f = this.files[0];
     if (!f) return;
+    _lastResumeFile = f;
     document.getElementById('uploadFileName').textContent = f.name;
     document.getElementById('uploadLoading').style.display = 'flex';
+    const tip = document.getElementById('parseQualityTip');
+    const btn = document.getElementById('aiReparseBtn');
+    tip.textContent = '';
+    btn.style.display = 'none';
     try {
       const text = await parseFile(f);
       document.getElementById('uploadedResumeText').value = text;
+      // 修复：质量闸门 —— 不合格时提示并显示 AI 版式识别按钮
+      const isPdf = f.name.toLowerCase().endsWith('.pdf');
+      if (text && isExtractionOk(text)) {
+        tip.textContent = '✓ 解析质量良好';
+        tip.style.color = '#059669';
+        if (isPdf) btn.style.display = 'inline-block';
+      } else if (text) {
+        tip.textContent = '⚠ 解析质量一般，建议点右侧按钮用 AI 版式识别重新解析';
+        tip.style.color = '#d97706';
+        if (isPdf) btn.style.display = 'inline-block';
+      } else {
+        tip.textContent = '未能解析出内容，请点右侧按钮用 AI 版式识别，或直接粘贴文本';
+        tip.style.color = '#dc2626';
+        if (isPdf) btn.style.display = 'inline-block';
+      }
     } catch(e) {
       alert('解析失败：' + e.message);
+      tip.textContent = '解析失败：' + e.message;
+      tip.style.color = '#dc2626';
     }
     document.getElementById('uploadLoading').style.display = 'none';
   });
@@ -2306,6 +2460,8 @@
   //   - 或行很短(<15字) 且 剩余部分是常见修饰词（核心/专业/个人…，如 "核心技能"→"核心"）
   // 内容行如 "获得技能证书"→剩"获得"(动词)、"熟悉技能与工具"→剩"熟悉与工具"，均不会误判
   const HEADER_MODIFIERS = ['核心','专业','个人','主要','基本','相关','通用','其他','各类','多项','特长','概述','简介','素质'];
+  // 修复：症状B —— 动态语义兜底：短行含板块语义关键词且无标点/冒号，判为标题（覆盖清单外措辞）
+  const SEMANTIC_HEADING_KW = ['经历','经验','技能','能力','荣誉','奖项','证书','总结','项目','教育','学历','论文','成果','实践','活动'];
   function isSectionMarkerLine(line) {
     if (!line) return false;
     const orig = line.trim();
@@ -2316,6 +2472,10 @@
     t = t.replace(/[\s·•|｜\-–—:：、,，.。（）()【】\[\]《》<>]/g, '');
     if (t.length <= 1) return true;
     if (orig.length < 15 && HEADER_MODIFIERS.includes(t)) return true;
+    // 动态语义兜底：短行(<12字) + 含板块语义关键词 + 不以标点/冒号结尾 → 判为标题
+    if (orig.length <= 12 && !/[，,。.；;：:]$/.test(orig)) {
+      if (SEMANTIC_HEADING_KW.some(kw => orig.includes(kw))) return true;
+    }
     return false;
   }
 
