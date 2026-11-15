@@ -1791,8 +1791,10 @@
             // args: [operators, points] 或直接 operators/points
             let ops = args[0], pts = args[1];
             if (Array.isArray(args) && args.length > 2 && !Array.isArray(args[0])) {
-              // args 直接是扁平的 [op, x, y, op, x, y, ...]？不太可能，兜底
               ops = []; pts = args;
+            }
+            if (argSamples.length < 80) {
+              argSamples.push({ i, fn: 'constructPath', opsVals: ops ? Array.from(ops).slice(0,8) : null, ptsLen: pts ? pts.length : 0, ptsSample: pts ? Array.from(pts).slice(0,8) : null, argsLen: args.length });
             }
             if (ops && typeof pts !== 'undefined') {
               pathPts = [];
@@ -1810,11 +1812,18 @@
             break;
           }
           case OPS.fill:
-          case OPS.eofill: {
+          case OPS.eofill:
+          case OPS.fillStroke:
+          case OPS.eofillStroke:
+          case OPS.closeFillStroke:
+          case OPS.closeEOFillStroke: {
             if (pathPts.length >= 4) {
               const xs = pathPts.map(p=>p.x), ys = pathPts.map(p=>p.y);
               const minX=Math.min(...xs), maxX=Math.max(...xs), minY=Math.min(...ys), maxY=Math.max(...ys);
-              shapes.push({ type:'rect', x:minX, y:minY, w:maxX-minX, h:maxY-minY, fill:curFill.slice(), stroke:null, lineWidth:0 });
+              const isStroke = fn === OPS.fillStroke || fn === OPS.eofillStroke || fn === OPS.closeFillStroke || fn === OPS.closeEOFillStroke;
+              shapes.push({ type:'rect', x:minX, y:minY, w:maxX-minX, h:maxY-minY, fill:curFill.slice(), stroke: isStroke ? curStroke.slice() : null, lineWidth: isStroke ? curLineWidth : 0 });
+            } else if (pathPts.length === 2 && (fn === OPS.fillStroke || fn === OPS.eofillStroke)) {
+              shapes.push({ type:'line', x1:pathPts[0].x, y1:pathPts[0].y, x2:pathPts[1].x, y2:pathPts[1].y, stroke:curStroke.slice(), lineWidth:curLineWidth });
             }
             pathPts = [];
             break;
@@ -1834,11 +1843,15 @@
           case OPS.showSpacedText: {
             // args 直接就是文本数组 [str, spacing, str, ...]
             const arr = args;
-            if (argSamples.length < 60) {
-              argSamples.push({ i, fn, afterUnwrap: Array.isArray(arr) ? ('Array['+arr.length+']') : typeof arr, inner: Array.isArray(arr) ? arr.slice(0,8).map(v => typeof v === 'string' ? JSON.stringify(v).substring(0,30) : (typeof v === 'number' ? v : typeof v)) : String(arr) });
+            if (argSamples.length < 80) {
+              const firstObj = Array.isArray(arr) && arr.length ? arr[0] : null;
+              argSamples.push({ i, fn, afterUnwrap: Array.isArray(arr) ? ('Array['+arr.length+']') : typeof arr, innerTypes: Array.isArray(arr) ? arr.slice(0,4).map(v => typeof v) : [], firstObjKeys: firstObj && typeof firstObj === 'object' ? Object.keys(firstObj).slice(0,8) : null, firstObjStr: firstObj ? String(firstObj).substring(0,80) : null });
             }
             if (Array.isArray(arr)) {
-              for (const el of arr) { if (typeof el === 'string') colors.push(curFill.slice()); }
+              for (const el of arr) {
+                if (typeof el === 'string') colors.push(curFill.slice());
+                else if (el && typeof el === 'object' && typeof el.str === 'string') colors.push(curFill.slice());
+              }
             }
             break;
           }
