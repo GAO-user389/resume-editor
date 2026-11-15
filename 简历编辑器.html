@@ -1747,14 +1747,17 @@
 
     for (let i = 0; i < fnArr.length; i++) {
       const fn = fnArr[i];
-      const args = argsArr[i];
+      let args = argsArr[i];
+      // 兼容：args 可能是 TypedArray，统一转普通数组
+      if (args && !Array.isArray(args) && typeof args.length === 'number') args = Array.from(args);
+      // 兼容：有些版本 args 是 [arg] 包裹形式，解包
+      if (Array.isArray(args) && args.length === 1 && Array.isArray(args[0])) args = args[0];
       try {
         switch (fn) {
           case OPS.save: ctmStack.push(ctm.slice()); break;
           case OPS.restore: if (ctmStack.length) ctm = ctmStack.pop(); break;
           case OPS.transform: {
             const [a,b,c,d,e,f] = args;
-            // 新 CTM = 新矩阵 * 旧 CTM
             const o = ctm;
             ctm = [a*o[0]+c*o[1], b*o[0]+d*o[1], a*o[2]+c*o[3], b*o[2]+d*o[3], a*o[4]+c*o[5]+e, b*o[4]+d*o[5]+f];
             break;
@@ -1780,19 +1783,23 @@
             break;
           }
           case OPS.constructPath: {
-            // args: [operators, args]
-            const ops = args[0], pts = args[1];
-            pathPts = [];
-            let pi = 0;
-            for (const op of ops) {
-              if (op === 0 || op === 1) { // moveTo / lineTo
-                const p = applyCTM(pts[pi], pts[pi+1]);
-                pathPts.push(p); pi += 2;
-                if (op === 0) pathStart = p;
-              } else if (op === 2 || op === 3) { // curveTo / curveTo2 / curveTo3
-                pi += (op === 2 ? 4 : 6);
-              } else if (op === 4) { // closePath
-                if (pathStart) pathPts.push(pathStart);
+            // args: [operators, points] 或直接 operators/points
+            let ops = args[0], pts = args[1];
+            if (Array.isArray(args) && args.length > 2 && !Array.isArray(args[0])) {
+              // args 直接是扁平的 [op, x, y, op, x, y, ...]？不太可能，兜底
+              ops = []; pts = args;
+            }
+            if (ops && typeof pts !== 'undefined') {
+              pathPts = [];
+              let pi = 0;
+              for (const op of ops) {
+                if (op === 0 || op === 1) {
+                  const p = applyCTM(pts[pi], pts[pi+1]);
+                  pathPts.push(p); pi += 2;
+                  if (op === 0) pathStart = p;
+                } else if (op === 2) { pi += 6; }
+                else if (op === 3) { pi += 4; }
+                else if (op === 4) { if (pathStart) pathPts.push(pathStart); }
               }
             }
             break;
@@ -1820,7 +1827,8 @@
           }
           case OPS.showText:
           case OPS.showSpacedText: {
-            const arr = args[0];
+            // args 直接就是文本数组 [str, spacing, str, ...]
+            const arr = args;
             if (Array.isArray(arr)) {
               for (const el of arr) { if (typeof el === 'string') colors.push(curFill.slice()); }
             }
@@ -1832,7 +1840,6 @@
               const objName = args[0];
               const imgObj = page.objs.get(objName);
               if (imgObj) {
-                // 图片位置由当前 CTM 决定
                 const p1 = applyCTM(0, 0);
                 const p2 = applyCTM(imgObj.width || 1, imgObj.height || 1);
                 let dataUrl = null;
@@ -1844,7 +1851,6 @@
                   if (imgObj.data.length === imgObj.width * imgObj.height * 4) {
                     imgData.data.set(imgObj.data);
                   } else if (imgObj.data.length === imgObj.width * imgObj.height) {
-                    // grayscale
                     for (let k=0;k<imgObj.data.length;k++){ imgData.data[k*4]=imgObj.data[k]; imgData.data[k*4+1]=imgObj.data[k]; imgData.data[k*4+2]=imgObj.data[k]; imgData.data[k*4+3]=255; }
                   }
                   ctx.putImageData(imgData, 0, 0);
@@ -1858,7 +1864,7 @@
             break;
           }
         }
-      } catch (e) { /* 单个 operator 出错不影响整体 */ }
+      } catch (e) { errors.push('op ' + fn + ': ' + e.message); }
     }
     // 调试：收集 fn 频率分布
     const fnFreq = {};
