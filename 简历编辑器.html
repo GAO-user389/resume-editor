@@ -1549,7 +1549,10 @@
       }
       tip.textContent = '正在下载...';
       // 文件名：姓名-学校-投递岗位.pdf
-      const name = (document.querySelector('.name')?.innerText || '简历').trim().split('\n')[0].trim();
+      // 报告 v3 修复：用 cleanName 避免 const name 被重新赋值报 "Assignment to constant variable"
+      const cleanF = (s) => (s || '').replace(/[\\/:*?"<>|\r\n\t]/g, '_').replace(/\s*[_\-]\s*/g, '-').trim();
+      const rawName = (document.querySelector('.name')?.innerText || '简历').trim().split('\n')[0].trim();
+      const cleanName = cleanF(rawName);
       // 学校：取第一个 .school 的学校名（去掉专业和学历）
       const schoolEl = document.querySelector('.school');
       let edu = '';
@@ -1558,6 +1561,7 @@
         // 去掉 "· 专业" 及之后的内容
         edu = edu.replace(/\s*[·•]\s*.*/, '').split('\n')[0].trim();
       }
+      edu = cleanF(edu);
       // 投递岗位：优先取 JD 中填写的目标岗位，否则取简历求职意向
       let position = '';
       try {
@@ -1571,10 +1575,9 @@
         if (m) position = m[1].trim();
         else position = intent;
       }
-      // 报告#7 文件名清洗加强：所有字段在拼接前就清理，避免冒号/空格泄露
-      const cleanF = (s) => (s || '').replace(/[\\/:*?"<>|\r\n\t]/g, '_').replace(/\s*[_\-]\s*/g, '-').trim();
-      name = cleanF(name); edu = cleanF(edu); position = cleanF(position);
-      let fname = name;
+      // 报告 v3：cleanF 已在前面定义，直接用 cleanName/edu/position（已预处理）
+      position = cleanF(position);
+      let fname = cleanName;
       if (edu) fname += '-' + edu;
       if (position) fname += '-' + position;
       fname = (fname || '简历') + '.pdf';
@@ -1929,17 +1932,17 @@
           }
           case OPS.showText:
           case OPS.showSpacedText: {
-            // 报告P1 颜色修复：同时记录每个字符块的 (x,y,color)
-            // Text matrix 当前位置 = tm[4], tm[5]
-            const tx = tm[4], ty = tm[5];
+            // 报告 v3 修复：用 applyCTM(tm[4], tm[5]) 把文本矩阵坐标转成页面坐标
+            // 匹配侧用的是 it.transform[4]/[5]（pdf.js applyCTM 后的结果），必须同一坐标系
+            const p0 = applyCTM(tm[4], tm[5]);
             const arr = args;
             if (Array.isArray(arr)) {
               for (const el of arr) {
                 if (typeof el === 'string') {
-                  if (el.trim()) { colors.push(curFill.slice()); textColors.push({ x: tx, y: ty, color: curFill.slice() }); }
+                  if (el.trim()) { colors.push(curFill.slice()); textColors.push({ x: p0.x, y: p0.y, color: curFill.slice() }); }
                 } else if (el && typeof el === 'object') {
                   const s = el.unicode || el.fontChar || '';
-                  if (typeof s === 'string' && s.trim()) { colors.push(curFill.slice()); textColors.push({ x: tx, y: ty, color: curFill.slice() }); }
+                  if (typeof s === 'string' && s.trim()) { colors.push(curFill.slice()); textColors.push({ x: p0.x, y: p0.y, color: curFill.slice() }); }
                 }
               }
             }
@@ -2033,7 +2036,10 @@
       const f = fnArr[i];
       fnFreq[f] = (fnFreq[f] || 0) + 1;
     }
-    window.__fidelityDebug = { colorsLen: colors.length, shapesLen: shapes.length, imagesLen: images.length, fnFreq, errors };
+    // 报告 v3：debug 里加 fontFamilyMap 内容和 textColors 样本，一眼看出坐标/字体匹配是否生效
+    const fontMapEntries = Object.entries(fontFamilyMap || {}).slice(0, 10).map(([alias, info]) => ({ alias, real: info.name, bold: info.bold, italic: info.italic }));
+    const textColorSample = (textColors || []).slice(0, 5);
+    window.__fidelityDebug = { colorsLen: colors.length, shapesLen: shapes.length, imagesLen: images.length, fnFreq, errors, fontMapCount: Object.keys(fontFamilyMap || {}).length, fontMapEntries, textColorsCount: (textColors || []).length, textColorSample };
     return { colors, shapes, images, textColors, fontFamilyMap, errors };
   }
 
@@ -3918,7 +3924,7 @@ ${JSON.stringify(input)}
     if (ok) {
       ensureEditable();
       originalSectionOrder = null;
-      if (!editMode) toggleEdit();
+      // 报告 v3：不再自动切编辑态，避免与回归测试脚本冲突；用户需要时手动点"开启编辑"
       document.querySelectorAll('#resume [contenteditable]').forEach(el => el.setAttribute('contenteditable', 'true'));
       refreshSectionDelButtons();
       document.getElementById('uploadModal').classList.remove('active');
