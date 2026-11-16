@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
@@ -2591,6 +2591,8 @@
               const resp = await fetch('/api/ai/ocr', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
+        credentials:
+ 'include',  // prompt_04: Cookie uid
                 body: JSON.stringify({ image_base64: base64 }),
               });
               if (resp.ok) {
@@ -2697,6 +2699,8 @@
       resp = await fetch('/api/ai/ocr', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        credentials:
+ 'include',  // prompt_04: Cookie uid
         body: JSON.stringify({ image_base64: base64, fingerprint: DEVICE_FP }),
         signal: controller.signal,
       });
@@ -2810,6 +2814,8 @@
       const resp = await fetch('/api/feishu/test', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        credentials:
+ 'include',  // prompt_04: Cookie uid
         body: JSON.stringify({ app_id: appId, app_secret: appSecret }),
       });
       const data = await resp.json();
@@ -2840,6 +2846,8 @@
       const resp = await fetch('/api/feishu/bitable/records', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        credentials:
+ 'include',  // prompt_04: Cookie uid
         body: JSON.stringify(body),
       });
       const data = await resp.json();
@@ -2896,6 +2904,8 @@
       const resp = await fetch('/api/ai/ocr', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        credentials:
+ 'include',  // prompt_04: Cookie uid
         body: JSON.stringify({ image_base64: base64, fingerprint: DEVICE_FP }),
       });
       const data = await resp.json();
@@ -3950,6 +3960,8 @@ ${JSON.stringify(input)}
             const res = await fetch(BACKEND_BASE_URL + '/api/resume/parse', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
+        credentials:
+ 'include',  // prompt_04: Cookie uid
               body: JSON.stringify({ text: text, fingerprint: DEVICE_FP }),
               signal: ac.signal,
             });
@@ -4107,7 +4119,10 @@ ${JSON.stringify(input)}
       const res = await fetch(BACKEND_BASE_URL + '/api/auth/identify', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fingerprint: DEVICE_FP }),
+        credentials:
+ 'include',  // prompt_04: Cookie uid
+        credentials: 'include',  // prompt_04：自动带 Cookie uid
+        body: JSON.stringify({ fingerprint: DEVICE_FP }),  // 保留但后端已忽略
       });
       if (res.ok) {
         userState = await res.json();
@@ -4178,6 +4193,8 @@ ${JSON.stringify(input)}
         const resp = await fetch('/api/ai/ocr', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
+        credentials:
+ 'include',  // prompt_04: Cookie uid
           body: JSON.stringify({ image_base64: base64, fingerprint: DEVICE_FP }),
         });
         const data = await resp.json();
@@ -4206,6 +4223,8 @@ ${JSON.stringify(input)}
       res = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        credentials:
+ 'include',  // prompt_04: Cookie uid
         body: JSON.stringify({ prompt, system_prompt: systemPrompt || null, fingerprint: DEVICE_FP }),
         signal: ac.signal,
       });
@@ -4334,12 +4353,19 @@ ${JSON.stringify(input)}
       const res = await fetch(BACKEND_BASE_URL + '/api/auth/activate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fingerprint: DEVICE_FP, code }),
+        credentials:
+ 'include',  // prompt_04: Cookie uid
+        credentials: 'include',  // prompt_04：自动带 Cookie uid
+        body: JSON.stringify({ fingerprint: DEVICE_FP, code }),  // 保留但后端已忽略 fingerprint
       });
       const data = await res.json();
       if (data.ok) {
         resultEl.textContent = '✓ ' + (data.message || '激活成功');
         resultEl.style.color = '#059669';
+        // prompt_04：自包含 RE- 码本地保存，换浏览器/清 Cookie 后重新输入即可恢复权益
+        if (code.toUpperCase().startsWith('RE-')) {
+          try { localStorage.setItem('license_code', code.toUpperCase()); } catch(_) {}
+        }
         // 用后端返回的 plan/expires_at/has_premium_templates 更新完整状态
         userState.plan = data.plan || userState.plan;
         userState.is_premium = true;
@@ -4444,6 +4470,8 @@ ${JSON.stringify(input)}
       const resp = await fetch('/api/feedback/submit', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        credentials:
+ 'include',  // prompt_04: Cookie uid
         body: JSON.stringify({
           fingerprint: window.DEVICE_FP,
           content, contact,
@@ -4477,6 +4505,8 @@ ${JSON.stringify(input)}
       const resp = await fetch('/api/feedback/mine', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        credentials:
+ 'include',  // prompt_04: Cookie uid
         body: JSON.stringify({ fingerprint: window.DEVICE_FP }),
       });
       const data = await resp.json();
@@ -4528,6 +4558,8 @@ ${JSON.stringify(input)}
       const resp = await fetch('/api/feedback/replied', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        credentials:
+ 'include',  // prompt_04: Cookie uid
         body: JSON.stringify({ fingerprint: window.DEVICE_FP }),
       });
       if (!resp.ok) return;
@@ -4568,6 +4600,8 @@ ${JSON.stringify(input)}
     fetch('/api/feedback/replied', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+        credentials:
+ 'include',  // prompt_04: Cookie uid
       body: JSON.stringify({ fingerprint: window.DEVICE_FP }),
     }).then(r => r.json()).then(data => {
       const items = data.items || [];
