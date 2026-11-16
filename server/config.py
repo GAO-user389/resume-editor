@@ -52,6 +52,11 @@ AI_VISION_MODEL = os.getenv("AI_VISION_MODEL", "glm-4v")
 # ========== NOT_A_RESUME 护栏标识 ==========
 NOT_A_RESUME_FLAG = "NOT_A_RESUME"
 
+# ========== 自包含兑换码密钥（prompt_04 方案 2.2）==========
+# 从环境变量读取，Render 部署时设置；绝不写前端、不进 Git
+# 生成命令：python -c "import secrets;print(secrets.token_urlsafe(48))"
+SERVER_SECRET = os.getenv("SERVER_SECRET", "")
+
 # ========== 商业化配置 ==========
 FREE_CALLS_DAILY = int(os.getenv("FREE_CALLS_DAILY", "3"))   # 免费：每天 AI 改写次数
 MONTHLY_PRICE = os.getenv("MONTHLY_PRICE", "9.9")            # ¥9.9 买断 30 天
