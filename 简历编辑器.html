@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
@@ -1184,7 +1184,13 @@
   const MAX_HISTORY = 30;
 
   function pushHistory() {
-    const snap = document.getElementById('resume').innerHTML;
+    // 报告 v4 修复：保存快照前排除 fidelityCanvas（运行时画布不该进历史）
+    const resume = document.getElementById('resume');
+    const fc = resume.querySelector('#fidelityCanvas');
+    const fcNext = fc?.nextSibling;
+    if (fc) fc.remove();
+    const snap = resume.innerHTML;
+    if (fc) { if (fcNext) resume.insertBefore(fc, fcNext); else resume.appendChild(fc); }
     // 避免连续相同的快照
     if (history.length > 0 && history[history.length-1] === snap) return;
     history.push(snap);
@@ -1201,7 +1207,11 @@
     if (history.length < 2) return;
     history.pop(); // 弹出当前
     const prev = history[history.length - 1];
-    document.getElementById('resume').innerHTML = prev;
+    // 报告 v4 修复：恢复 innerHTML 前保护 fidelityCanvas
+    const resume = document.getElementById('resume');
+    const fc = resume.querySelector('#fidelityCanvas');
+    resume.innerHTML = prev;
+    if (fc && !resume.querySelector('#fidelityCanvas')) resume.appendChild(fc);
     if (editMode) {
       ensureEditable();
       document.querySelectorAll('#resume [contenteditable]').forEach(el => el.setAttribute('contenteditable', 'true'));
@@ -1229,8 +1239,19 @@
   }
   function autoSave() {
     try {
-      const html = document.getElementById('resume').innerHTML;
+      // 报告 v4 修复：保存前先移除 fidelityCanvas（运行时渲染的画布不该被持久化）
+      const resume = document.getElementById('resume');
+      const fc = resume.querySelector('#fidelityCanvas');
+      const fcParent = fc?.parentNode;
+      const fcNext = fc?.nextSibling;
+      if (fc) fc.remove();
+      const html = resume.innerHTML;
       localStorage.setItem(SAVE_KEY, html);
+      // 恢复 fidelityCanvas 到 DOM
+      if (fc && fcParent) {
+        if (fcNext) fcParent.insertBefore(fc, fcNext);
+        else fcParent.appendChild(fc);
+      }
       showSaveStatus('已自动保存 ' + new Date().toLocaleTimeString());
     } catch(e) { /* localStorage 可能被禁用 */ }
   }
@@ -1238,7 +1259,14 @@
     try {
       const saved = localStorage.getItem(SAVE_KEY);
       if (saved) {
-        document.getElementById('resume').innerHTML = saved;
+        // 报告 v4 修复：恢复前先摘出 fidelityCanvas，恢复后补回去（旧 saved 里可能不含它）
+        const resume = document.getElementById('resume');
+        const fc = resume.querySelector('#fidelityCanvas');
+        resume.innerHTML = saved;
+        if (fc) {
+          const existing = resume.querySelector('#fidelityCanvas');
+          if (!existing) resume.appendChild(fc);
+        }
         showSaveStatus('已恢复上次编辑');
       }
     } catch(e) {}
@@ -1740,75 +1768,41 @@
     const colors = [];
     const shapes = [];
     const images = [];
-    // 报告P1 颜色修复：textColors 记录每次 showText 时的 {x,y,color}，比 operatorList 索引更可靠
-    const textColors = []; // [{x, y, color:[r,g,b]}]
+    // 报告 v4 颜色修复：放弃坐标匹配，改用 showText 事件顺序 + 累积偏移对齐 getTextContent.items
+    const textColorsByOrder = []; // 只记录真正触发 showText 的 curFill 颜色
     let curFill = [0,0,0], curStroke = [0,0,0];
     let curLineWidth = 1;
     // Text state：text matrix [a,b,c,d,e,f] + leading
     let tm = [1,0,0,1,0,0];
     let textLeading = 0;
-    // 报告P1 粗体修复：追踪字体别名→真实字体名映射（pdf.js fontName 是 g_d0_f1 别名，不含 Bold 字样）
-    const fontFamilyMap = {}; // { 'g_d0_f1': { name: 'AlibabaPuHuiTi-Bold', bold: true } }
-    const classifyFont = (realName) => {
-      if (!realName) return null;
-      const n = realName.toLowerCase();
-      return {
-        name: realName,
-        bold: /bold|black|heavy|extrabold|semibold|demibold|medium|conbold/i.test(n),
-        italic: /italic|oblique/i.test(n),
-      };
-    };
-    const objs = page.objs || page.commonObjs;
+    // 报告 v4 粗体修复：await page.commonObjs.get(alias) resolve 字体对象
+    // 实测 .name = "Helvetica-Bold"（真实名字），.bold / .italic 直接是布尔，完全不需要正则
+    const fontFamilyMap = {};
+    const fontResolveDebug = [];
     try {
-      // 路径1: page.fontResources / page._fontResources（旧版 pdf.js）
-      const fontResources = page.fontResources || page._fontResources || {};
-      for (const [alias, fontObj] of Object.entries(fontResources)) {
-        if (fontObj && fontObj.name && !fontFamilyMap[alias]) {
-          const info = classifyFont(fontObj.name);
-          if (info) fontFamilyMap[alias] = info;
+      // 从 getTextContent 拿所有 fontName alias，pdf.js 新版 fontResources 字段已不存在
+      const tc = await page.getTextContent();
+      const aliases = [...new Set(tc.items.map(it => it.fontName).filter(Boolean))];
+      for (const alias of aliases) {
+        try {
+          // 关键：await .get() 会懒加载 resolve，同步 forEach 拿不到
+          const fontObj = await page.commonObjs.get(alias);
+          if (fontObj) {
+            const realName = fontObj.name || alias;
+            fontFamilyMap[alias] = {
+              name: realName,
+              bold: !!fontObj.bold,      // pdf.js 字体对象上直接是布尔
+              italic: !!fontObj.italic,
+              fallbackName: fontObj.fallbackName,
+            };
+            fontResolveDebug.push({ alias, rawName: alias, resolvedName: realName, bold: fontObj.bold, italic: fontObj.italic, source: 'commonObjs.get(await)' });
+          } else {
+            fontResolveDebug.push({ alias, rawName: alias, resolvedName: null, bold: null, italic: null, source: 'commonObjs.get returned null' });
+          }
+        } catch(e) {
+          fontResolveDebug.push({ alias, rawName: alias, resolvedName: null, bold: null, italic: null, source: 'commonObjs.get error: ' + e.message });
         }
       }
-      // 路径2: page.commonObjs 遍历（旧版 pdf.js）
-      if (objs && typeof objs.forEach === 'function') {
-        objs.forEach((obj, alias) => {
-          if (obj && obj.name && typeof obj.name === 'string' && !fontFamilyMap[alias]) {
-            const info = classifyFont(obj.name);
-            if (info) fontFamilyMap[alias] = info;
-          }
-        });
-      }
-      // 路径3: pdf.js 新版 _transport.fontLoader.nativeFontFaces
-      try {
-        const fl = page._transport?.fontLoader || (page.commonObjs?._transport?.fontLoader);
-        if (fl) {
-          // nativeFontFaces 可能是 Map 或 Object
-          const nff = fl.nativeFontFaces;
-          if (nff) {
-            const entries = nff instanceof Map ? Array.from(nff.entries()) : Object.entries(nff);
-            for (const [alias, face] of entries) {
-              if (face && !fontFamilyMap[alias]) {
-                const family = face.family || face.name || (face.cssFamily && face.cssFamily.replace(/^"|"$/g, ''));
-                if (family) {
-                  const info = classifyFont(family);
-                  if (info) fontFamilyMap[alias] = info;
-                }
-              }
-            }
-          }
-        }
-      } catch(e) {}
-      // 路径4: document.fonts（CSS FontFaceSet），pdf.js 加载字体后注册到这里
-      try {
-        if (document.fonts && document.fonts.forEach) {
-          document.fonts.forEach(face => {
-            const family = face.family?.replace(/^"|"$/g, '') || '';
-            if (family) {
-              const info = classifyFont(family);
-              if (info && !fontFamilyMap[family]) fontFamilyMap[family] = info;
-            }
-          });
-        }
-      } catch(e) {}
     } catch(e) { errors.push('fontMap: ' + e.message); }
     // CTM: 当前变换矩阵 [a,b,c,d,e,f]，默认单位矩阵
     let ctm = [1,0,0,1,0,0];
@@ -1932,20 +1926,20 @@
           }
           case OPS.showText:
           case OPS.showSpacedText: {
-            // 报告 v3 修复：用 applyCTM(tm[4], tm[5]) 把文本矩阵坐标转成页面坐标
-            // 匹配侧用的是 it.transform[4]/[5]（pdf.js applyCTM 后的结果），必须同一坐标系
-            const p0 = applyCTM(tm[4], tm[5]);
+            // 报告 v4 修复：按事件顺序 push curFill（一个 showText = 一个颜色事件）
+            // 颜色不在 operatorList 索引里对齐，直接和 getTextContent.items 顺序对应
             const arr = args;
+            let hasText = false;
             if (Array.isArray(arr)) {
               for (const el of arr) {
-                if (typeof el === 'string') {
-                  if (el.trim()) { colors.push(curFill.slice()); textColors.push({ x: p0.x, y: p0.y, color: curFill.slice() }); }
-                } else if (el && typeof el === 'object') {
+                if (typeof el === 'string' && el.trim()) { hasText = true; colors.push(curFill.slice()); }
+                else if (el && typeof el === 'object') {
                   const s = el.unicode || el.fontChar || '';
-                  if (typeof s === 'string' && s.trim()) { colors.push(curFill.slice()); textColors.push({ x: p0.x, y: p0.y, color: curFill.slice() }); }
+                  if (typeof s === 'string' && s.trim()) { hasText = true; colors.push(curFill.slice()); }
                 }
               }
             }
+            if (hasText) textColorsByOrder.push(curFill.slice()); // 只记录真正有文本的 showText
             break;
           }
           case OPS.paintImageXObject:
@@ -2036,11 +2030,8 @@
       const f = fnArr[i];
       fnFreq[f] = (fnFreq[f] || 0) + 1;
     }
-    // 报告 v3：debug 里加 fontFamilyMap 内容和 textColors 样本，一眼看出坐标/字体匹配是否生效
-    const fontMapEntries = Object.entries(fontFamilyMap || {}).slice(0, 10).map(([alias, info]) => ({ alias, real: info.name, bold: info.bold, italic: info.italic }));
-    const textColorSample = (textColors || []).slice(0, 5);
-    window.__fidelityDebug = { colorsLen: colors.length, shapesLen: shapes.length, imagesLen: images.length, fnFreq, errors, fontMapCount: Object.keys(fontFamilyMap || {}).length, fontMapEntries, textColorsCount: (textColors || []).length, textColorSample };
-    return { colors, shapes, images, textColors, fontFamilyMap, errors };
+    window.__fidelityDebug = { colorsLen: colors.length, shapesLen: shapes.length, imagesLen: images.length, fnFreq, errors, fontMapCount: Object.keys(fontFamilyMap || {}).length, fontResolveDebug: fontResolveDebug.slice(0, 15), textColorsByOrderLen: textColorsByOrder.length, textColSample: textColorsByOrder.slice(0, 5).map(c => Array.from(c)) };
+    return { colors, shapes, images, textColorsByOrder, fontFamilyMap, errors };
   }
 
   // 分栏检测 + 阅读顺序排序
@@ -2090,6 +2081,8 @@
         if (/^(\d[a-z]|[a-z]\d)-?$/.test(s)) return true;
         return false;
       };
+      // 报告 v4：textBlockCursor 记录通过过滤的有效文本块序号，与 showText 事件顺序 1:1 对齐
+      let textBlockCursor = 0;
       items.forEach((it, idx) => {
         if (!it.str || !it.str.trim()) return;
         // 过滤边界外的水印 + BOSS直聘防爬碎片
@@ -2106,19 +2099,19 @@
         const fontNameReal = fontMeta?.name || it.fontName || '';
         const n = fontNameReal.toLowerCase();
         const isBold = fontMeta?.bold !== undefined ? fontMeta.bold : /bold|black|heavy|extrabold|semibold|demibold|medium/i.test(n);
-        // 报告P1 颜色修复：优先用 textColors 按坐标匹配（距离<3pt），比 operatorList 索引更准
+        // 报告 v4 颜色修复：按 getTextContent.items 顺序对齐 textColorsByOrder
+        // 2.2 节证伪坐标方案 → 一个 showText 事件 ≈ 一个 items[i]，按序 cursor 对齐
+        const colorEvents = assets.textColorsByOrder || [];
+        const validItemIdx = textBlockCursor++; // 有效文本块序号（过滤后），cursor 自增
         let color;
-        const textCs = assets.textColors;
-        if (textCs && textCs.length > 0) {
-          let best = null, bestD = Infinity;
-          for (const tc of textCs) {
-            const dx = tc.x - x, dy = tc.y - y;
-            const d = Math.sqrt(dx*dx + dy*dy);
-            if (d < bestD) { bestD = d; best = tc; }
-          }
-          color = best && bestD < 3 ? best.color : (assets.colors[idx] || [0,0,0]);
+        if (colorEvents.length > 0 && validItemIdx < colorEvents.length) {
+          // v4 主路径：showText 事件顺序 = 有效文本块顺序，直接按 cursor 取
+          color = colorEvents[validItemIdx];
+        } else if (assets.colors && idx < assets.colors.length) {
+          // 降级路径：operatorList colors 原始索引对齐
+          color = assets.colors[idx];
         } else {
-          color = assets.colors[idx] || [0,0,0];
+          color = [0, 0, 0];
         }
         // 旋转文本（水印）：transform 的 b/c 分量非零
         const isRotated = Math.abs(m[1]) > 0.01 || Math.abs(m[2]) > 0.01;
@@ -2267,6 +2260,11 @@
     const canvas = document.getElementById('fidelityCanvas');
     const btn = document.getElementById('fidelityModeBtn');
     const resumeEl = document.getElementById('resume');
+    if (!inner || !canvas || !resumeEl) {
+      console.warn('[toggleRenderMode] DOM 元素缺失:', { inner:!!inner, canvas:!!canvas, resumeEl:!!resumeEl });
+      showToast('DOM 未就绪，请刷新页面重试', 'error');
+      return;
+    }
     const undoBtn = document.getElementById('fidelityUndoBtn');
     const redoBtn = document.getElementById('fidelityRedoBtn');
     const exportBtn = document.getElementById('fidelityExportBtn');
