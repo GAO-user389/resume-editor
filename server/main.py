@@ -143,17 +143,23 @@ def verify_self_contained_code(code: str) -> dict:
     if not config.SERVER_SECRET:
         return {"ok": False, "reason": "SERVER_SECRET 未配置"}
 
+    debug = {"code_upper": code, "secret_md5": hashlib.md5(config.SERVER_SECRET.encode()).hexdigest()}
     try:
         rest = code[3:]  # 去掉 "RE-"
         body_part, sig_part = rest.rsplit(".", 1)
+        debug["body_part_len"] = len(body_part)
+        debug["sig_part"] = sig_part
+        debug["sig_part_len"] = len(sig_part)
         # 验签（恒定时间比较）
         expected_sig = _b64url(hmac.new(
             config.SERVER_SECRET.encode(),
             body_part.encode(),
             hashlib.sha256,
         ).digest()[:24])
+        debug["expected_sig"] = expected_sig
+        debug["compare_digest"] = hmac.compare_digest(expected_sig, sig_part)
         if not hmac.compare_digest(expected_sig, sig_part):
-            return {"ok": False, "reason": "签名无效"}
+            return {"ok": False, "reason": "签名无效", "_debug": debug}
 
         payload = json.loads(_b64url_decode(body_part))
         plan = payload.get("plan")
@@ -337,6 +343,13 @@ def health():
         "env_secret_full": env_secret,
         "env_secret_md5": _h.md5(env_secret.encode()).hexdigest(),
     }
+
+
+@app.get("/debug/verify-code", tags=["debug"])
+def debug_verify(code: str):
+    """临时 debug 端点：传入 RE- 码，返回 Render 上 verify 的完整中间值。"""
+    result = verify_self_contained_code(code)
+    return JSONResponse(content=result)
 
 
 @app.get("/privacy", response_class=HTMLResponse, tags=["privacy"])
