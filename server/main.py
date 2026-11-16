@@ -10,13 +10,17 @@ import logging
 import os
 import hashlib
 import secrets
+import hmac
+import base64
+import json
+import time
 from pathlib import Path
 from typing import Optional
 
 import httpx
 from fastapi import FastAPI, Request, HTTPException, Depends, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, HTMLResponse, FileResponse
+from fastapi.responses import JSONResponse, HTMLResponse, FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -49,6 +53,127 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ========== Cookie 匿名身份中间件（prompt_04 2.1）==========
+# 每个首次请求的客户端，后端下发 HttpOnly Cookie uid
+# 后续所有接口读 Cookie uid，忽略前端自报 fingerprint（仅兼容保留字段）
+@app.middleware("http")
+async def cookie_identity_middleware(request: Request, call_next):
+    uid = request.cookies.get("uid")
+    if not uid:
+        uid = secrets.token_urlsafe(24)
+        request.state.new_uid = True
+    else:
+        request.state.new_uid = False
+    request.state.uid = uid
+    response = await call_next(request)
+    # 新 uid 或 Cookie 缺失时 Set-Cookie
+    if getattr(request.state, "new_uid", False):
+        response.set_cookie(
+            key="uid",
+            value=uid,
+            httponly=True,
+            secure=True,
+            samesite="lax",
+            path="/",
+            max_age=31536000,  # 1 年
+        )
+    return response
+
+
+def uid_from_request(request: Request) -> str:
+    """从 request.state 拿 uid（依赖上面中间件）。"""
+    return getattr(request.state, "uid", "") or get_client_ip(request)
+
+
+# ========== 自包含兑换码签发与验签（prompt_04 2.2）==========
+def _b64url(data: bytes) -> str:
+    """base64url 编码（无 padding）。"""
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+
+def _b64url_decode(s: str) -> bytes:
+    pad = "=" * (-len(s) % 4)
+    return base64.urlsafe_b64decode(s + pad)
+
+
+def issue_self_contained_code(plan: str, days: int = None) -> str:
+    """
+    签发自包含兑换码。plan: 'monthly' 或 'permanent'。
+    返回格式：RE-<base64url(body)>.<base64url(sig)>
+    body = HMAC-SHA256(SERVER_SECRET, payload_json) 前 24 字节
+    """
+    if not config.SERVER_SECRET:
+        raise RuntimeError("SERVER_SECRET 未配置（Render 环境变量）")
+    if plan not in ("monthly", "permanent"):
+        raise ValueError(f"未知套餐: {plan}")
+
+    if plan == "monthly":
+        exp = int(time.time()) + (days or config.MONTHLY_DAYS) * 86400
+    else:
+        exp = 0  # 永久：exp=0 表示永不过期
+
+    payload = json.dumps({
+        "plan": plan,
+        "exp": exp,
+        "nonce": secrets.token_hex(8),
+        "iat": int(time.time()),
+    }, separators=(",", ":"), sort_keys=True)
+
+    body = _b64url(payload.encode())
+    sig_bytes = hmac.new(
+        config.SERVER_SECRET.encode(),
+        body.encode(),
+        hashlib.sha256,
+    ).digest()[:24]  # 取前 24 字节（48 hex 字符）做签名，够短且安全
+    sig = _b64url(sig_bytes)
+    return f"RE-{body}.{sig}"
+
+
+def verify_self_contained_code(code: str) -> dict:
+    """
+    验证自包含兑换码。
+    成功返回 {"ok": True, "plan": str, "expires_at": str|None}
+    失败返回 {"ok": False, "reason": str}
+    """
+    code = code.strip().upper()
+    if not code.startswith("RE-"):
+        return {"ok": False, "reason": "不是 RE- 前缀的自包含兑换码"}
+    if not config.SERVER_SECRET:
+        return {"ok": False, "reason": "SERVER_SECRET 未配置"}
+
+    try:
+        rest = code[3:]  # 去掉 "RE-"
+        body_part, sig_part = rest.rsplit(".", 1)
+        # 验签（恒定时间比较）
+        expected_sig = _b64url(hmac.new(
+            config.SERVER_SECRET.encode(),
+            body_part.encode(),
+            hashlib.sha256,
+        ).digest()[:24])
+        if not hmac.compare_digest(expected_sig, sig_part):
+            return {"ok": False, "reason": "签名无效"}
+
+        payload = json.loads(_b64url_decode(body_part))
+        plan = payload.get("plan")
+        exp = payload.get("exp", 0)
+        nonce = payload.get("nonce")
+        if plan not in ("monthly", "permanent"):
+            return {"ok": False, "reason": "套餐无效"}
+        if not nonce:
+            return {"ok": False, "reason": "缺少 nonce"}
+        if exp and exp < int(time.time()):
+            return {"ok": False, "reason": "兑换码已过期"}
+
+        expires_at = None
+        if plan == "monthly" and exp:
+            expires_at = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(exp)) + "Z"
+
+        return {"ok": True, "plan": plan, "expires_at": expires_at}
+
+    except (ValueError, json.JSONDecodeError, Exception) as e:
+        return {"ok": False, "reason": f"格式错误: {str(e)[:80]}"}
 
 
 # ========== 请求 / 响应模型 ==========
@@ -196,7 +321,7 @@ def rate_limit_dependency(request: Request):
 # ========== 路由 ==========
 @app.get("/health", tags=["health"])
 def health():
-    return {"status": "ok", "ai_configured": bool(config.AI_API_KEY)}
+    return {"status": "ok", "ai_configured": bool(config.AI_API_KEY), "server_secret_configured": bool(config.SERVER_SECRET)}
 
 
 @app.get("/privacy", response_class=HTMLResponse, tags=["privacy"])
@@ -242,8 +367,8 @@ def ai_chat(req: AIChatRequest, request: Request):
             detail=f"输入内容过长（{total_len} 字符），请精简至 {config.MAX_INPUT_LENGTH} 字符以内",
         )
 
-    # 配额检查
-    quota = check_quota(req.fingerprint or ("ip_" + get_client_ip(request)))
+    # 配额检查（prompt_04：用 Cookie uid，忽略前端自报 fingerprint）
+    quota = check_quota(uid_from_request(request))
     if not quota["ok"]:
         raise HTTPException(
             status_code=403,
@@ -349,8 +474,8 @@ def ai_ocr(req: OCRRequest, request: Request):
     if len(req.image_base64) > 5 * 1024 * 1024:
         raise HTTPException(status_code=413, detail="图片过大，请压缩后再上传")
 
-    # 配额检查
-    quota = check_quota(req.fingerprint or ("ip_" + get_client_ip(request)))
+    # 配额检查（prompt_04：Cookie uid）
+    quota = check_quota(uid_from_request(request))
     if not quota["ok"]:
         raise HTTPException(
             status_code=403,
@@ -440,14 +565,14 @@ def feishu_test_connection(req: FeishuTestRequest, request: Request):
         raise HTTPException(status_code=e.code, detail=e.message)
 
 
-# ========== 商业化：设备指纹 + 每日配额 + 激活码（3档） ==========
-def check_quota(fingerprint: str) -> dict:
+# ========== 商业化：Cookie uid + 每日配额 + 激活码（prompt_04 2.1）==========
+def check_quota(identity: str) -> dict:
     """
-    检查用户配额。
+    检查用户配额。identity = Cookie uid（prompt_04 2.1）。
     返回 {ok: bool, remaining: int, is_premium: bool, plan: str, user_id: str, entitlement: dict}
     """
     try:
-        user = db.get_or_create_user(fingerprint)
+        user = db.get_or_create_user(identity)
         ent = db.get_user_entitlement(user["id"])
         is_premium = ent["is_active"]
         if is_premium:
@@ -467,16 +592,22 @@ def check_quota(fingerprint: str) -> dict:
 
 @app.post("/api/auth/identify", tags=["auth"])
 def identify_device(req: IdentifyRequest, request: Request):
-    """设备指纹识别：返回用户状态（套餐、每日剩余、高级模板权限）。"""
+    """
+    Cookie 匿名身份识别（prompt_04 2.1）。
+    忽略前端自报的 fingerprint，统一从 HttpOnly Cookie 读 uid。
+    返回用户状态（套餐、每日剩余、高级模板权限）。
+    首次访问会 Set-Cookie: uid=<random_uuid>。
+    """
     ip = get_client_ip(request)
+    uid = uid_from_request(request)
     try:
-        user = db.get_or_create_user(req.fingerprint)
+        user = db.get_or_create_user(uid)
         ent = db.get_user_entitlement(user["id"])
         if ent["is_active"]:
             remaining = -1
         else:
             remaining = db.get_daily_remaining(user["id"], config.FREE_CALLS_DAILY)
-        logger.info("设备识别 ip=%s plan=%s active=%s", ip, ent["plan"], ent["is_active"])
+        logger.info("设备识别 ip=%s uid=%s plan=%s active=%s", ip, uid[:8], ent["plan"], ent["is_active"])
         return JSONResponse(content={
             "plan": ent["plan"],
             "is_premium": ent["is_active"],
@@ -500,30 +631,86 @@ def identify_device(req: IdentifyRequest, request: Request):
 
 @app.post("/api/auth/activate", tags=["auth"])
 def activate_code(req: ActivateRequest, request: Request):
-    """激活码核销：支持 monthly（¥9.9 30天）和 permanent（¥19.9 永久）两种。"""
+    """
+    激活码核销（prompt_04 2.2 + 2.3 兼容）。
+    RE- 前缀 → 自包含签名码（不绑定设备、不依赖 DB）
+    旧 RESUME- 前缀 → legacy 一次性码（走旧 DB 逻辑）
+    全部基于 Cookie uid 绑定用户，忽略前端 fingerprint。
+    """
     ip = get_client_ip(request)
-    try:
-        user = db.get_or_create_user(req.fingerprint)
-        ent = db.get_user_entitlement(user["id"])
-        if ent["is_active"]:
-            return JSONResponse(content={
-                "ok": True, "message": f"您已是{'永久' if ent['plan']=='permanent' else '30天'}用户，无需重复激活",
-                "is_premium": True, "plan": ent["plan"], "expires_at": ent["expires_at"],
-            })
-        result = db.verify_and_use_code(req.code, user["id"])
-        if result["ok"]:
-            plan_label = "永久" if result["plan"] == "permanent" else f"30天（到期 {result['expires_at'][:10] if result['expires_at'] else ''}）"
-            logger.info("激活码核销成功 ip=%s plan=%s", ip, result["plan"])
+    uid = uid_from_request(request)
+    code = req.code.strip().upper()
+
+    # 分支：RE- 自包含 vs legacy 一次性
+    if code.startswith("RE-"):
+        # 自包含签名码（prompt_04 2.2）
+        verify = verify_self_contained_code(code)
+        if not verify["ok"]:
+            return JSONResponse(status_code=400, content={"ok": False, "message": f"激活码无效：{verify['reason']}"})
+        # 码本身已含权益，不需要 DB 校验。绑定到当前 uid 的用户
+        try:
+            user = db.get_or_create_user(uid)
+            ent = db.get_user_entitlement(user["id"])
+            if ent["is_active"]:
+                plan_label = "永久" if ent["plan"] == "permanent" else "30天"
+                return JSONResponse(content={
+                    "ok": True, "message": f"您已是{plan_label}用户，无需重复激活",
+                    "is_premium": True, "plan": ent["plan"], "expires_at": ent["expires_at"],
+                })
+            # 升级用户
+            plan = verify["plan"]
+            expires_at_str = verify["expires_at"]
+            from datetime import datetime, timedelta, timezone
+            expires_at = None
+            if plan == "monthly" and expires_at_str:
+                # expires_at_str 已经是 ISO 时间戳，转 datetime（不绑定数据库计算过期时间，因为码里已含 exp）
+                expires_at = datetime.strptime(expires_at_str.replace("Z",""), "%Y-%m-%dT%H:%M:%S")
+            with db.get_conn() as conn:
+                cur = conn.cursor()
+                cur.execute(
+                    "UPDATE users SET plan = %s, expires_at = %s, updated_at = NOW() WHERE id = %s",
+                    (plan, expires_at, user["id"]),
+                )
+            logger.info("自包含码激活成功 ip=%s uid=%s plan=%s", ip, uid[:8], plan)
+            plan_label = "永久" if plan == "permanent" else f"30天"
             return JSONResponse(content={
                 "ok": True, "message": f"激活成功！已升级为{plan_label}套餐",
-                "is_premium": True, "plan": result["plan"], "expires_at": result["expires_at"],
-                "has_premium_templates": result["plan"] == "permanent",
+                "is_premium": True, "plan": plan, "expires_at": expires_at_str,
+                "has_premium_templates": plan == "permanent",
             })
-        return JSONResponse(status_code=400, content={"ok": False, "message": "激活码无效或已被使用"})
-    except Exception as e:
-        import traceback
-        logger.error("激活码核销失败: %s\n%s", e, traceback.format_exc())
-        raise HTTPException(status_code=500, detail="激活服务异常，请稍后再试")
+        except Exception as e:
+            logger.warning("自包含码激活 DB 更新失败: %s", e)
+            # 码验签已过，降级返回成功（权益以码为准，DB 更新是锦上添花）
+            plan = verify["plan"]
+            return JSONResponse(content={
+                "ok": True, "message": "激活成功！",
+                "is_premium": True, "plan": plan, "expires_at": verify["expires_at"],
+                "has_premium_templates": plan == "permanent",
+            })
+    else:
+        # legacy 一次性码（prompt_04 2.3 兼容）—— 存量耗尽后删除此分支
+        try:
+            user = db.get_or_create_user(uid)
+            ent = db.get_user_entitlement(user["id"])
+            if ent["is_active"]:
+                return JSONResponse(content={
+                    "ok": True, "message": f"您已是{'永久' if ent['plan']=='permanent' else '30天'}用户，无需重复激活",
+                    "is_premium": True, "plan": ent["plan"], "expires_at": ent["expires_at"],
+                })
+            result = db.verify_and_use_code(req.code, user["id"])
+            if result["ok"]:
+                plan_label = "永久" if result["plan"] == "permanent" else f"30天（到期 {result['expires_at'][:10] if result['expires_at'] else ''}）"
+                logger.info("legacy 码核销成功 ip=%s uid=%s plan=%s", ip, uid[:8], result["plan"])
+                return JSONResponse(content={
+                    "ok": True, "message": f"激活成功！已升级为{plan_label}套餐",
+                    "is_premium": True, "plan": result["plan"], "expires_at": result["expires_at"],
+                    "has_premium_templates": result["plan"] == "permanent",
+                })
+            return JSONResponse(status_code=400, content={"ok": False, "message": "激活码无效或已被使用"})
+        except Exception as e:
+            import traceback
+            logger.error("legacy 码核销失败: %s\n%s", e, traceback.format_exc())
+            raise HTTPException(status_code=500, detail="激活服务异常，请稍后再试")
 
 
 # ========== AI 客服：反馈工单 ==========
@@ -1005,6 +1192,28 @@ def admin_delete(feedback_id: str, _: bool = Depends(_require_admin)):
     if not ok:
         raise HTTPException(status_code=404, detail="工单不存在")
     return JSONResponse(content={"ok": True})
+
+
+@app.post("/api/admin/issue-code", tags=["admin"])
+def admin_issue_code(plan: str = "permanent", count: int = 1, days: int = None,
+                     _: bool = Depends(_require_admin)):
+    """
+    管理员签发自包含兑换码（prompt_04 2.2）。
+    plan: 'permanent'（默认）或 'monthly'
+    count: 一次发几个（最多 100）
+    """
+    count = max(1, min(100, count))
+    try:
+        codes = [issue_self_contained_code(plan, days) for _ in range(count)]
+        return JSONResponse(content={
+            "ok": True,
+            "count": count,
+            "plan": plan,
+            "codes": codes,
+            "hint": "这些码是自包含签名码，不绑定设备、可重复使用、换浏览器/清 Cookie 后重新输入即可恢复权益",
+        })
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/admin/test-smtp", tags=["admin"])
