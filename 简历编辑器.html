@@ -1807,42 +1807,46 @@
     // CTM: 当前变换矩阵 [a,b,c,d,e,f]，默认单位矩阵
     let ctm = [1,0,0,1,0,0];
     const ctmStack = [];
-    // Bug A 修复：拿到 viewport transform，合成到 applyCTM 中
-    // pdf.js viewport.transform 把 PDF 用户空间坐标（y 从底向上）
-    // 映射到页面像素坐标（y 从上到下），包含 scale 和 y 翻转
+    // Fix 3 修复：坐标系统一 —— 用 pdf.js 原生 Util.transform 做矩阵合成
+    // pdf.js getViewport({scale:1}).transform 是 viewport 变换（y 轴翻转 + scale）
+    // operatorList 内部的 ctm 是 PDF 内容变换
+    // 最终坐标 = vpTransform × ctm × [x, y]
     let vpTransform = [1,0,0,1,0,0];
     try {
       const vp = page.getViewport({ scale: 1 });
       if (vp && vp.transform) vpTransform = vp.transform.slice();
       else if (vp) {
-        // 自己构造：scale_x, 0, 0, -scale_y, -page_x_offset, page_y (y 翻转)
+        // 自己构造：scale_x, 0, 0, -scale_y, 0, page_height（y 翻转）
         vpTransform = [1, 0, 0, -1, 0, vp.height || pageH];
       }
     } catch(e) { errors.push('viewport transform: ' + e.message); }
-    // 把两个 6 元素仿射变换矩阵相乘：res = A × B
-    const multiply = (A, B) => [
-      A[0]*B[0] + A[2]*B[1],
-      A[1]*B[0] + A[3]*B[1],
-      A[0]*B[2] + A[2]*B[3],
-      A[1]*B[2] + A[3]*B[3],
-      A[0]*B[4] + A[2]*B[5] + A[4],
-      A[1]*B[4] + A[3]*B[5] + A[5],
-    ];
-    // 最终坐标 = viewportTransform × contentCTM × (x,y)
-    const fullTransform = multiply(vpTransform, ctm);
-    // 累积路径点
+    // 用 pdf.js 原生 Util.transform 合成（先应用 ctm，再应用 viewport transform）
+    // 参数：Util.transform([matrix6], [x, y]) → [newX, newY]
+    const pdfUtil = window.pdfjsLib.Util;
+    const applyCTM = (x, y) => {
+      // 合成矩阵：先 ctm 变换，再 vpTransform 变换
+      // 但 operatorList 里的 ctm 是相对于 save/restore 嵌套的，需要正确处理
+      // 直接用 pdf.js 的 beginItem 坐标系方案：先 viewportTransform × (ctm × point)
+      // ctm × point
+      const cx = ctm[0]*x + ctm[2]*y + ctm[4];
+      const cy = ctm[1]*x + ctm[3]*y + ctm[5];
+      // viewportTransform × (ctm × point)
+      const vx = vpTransform[0]*cx + vpTransform[2]*cy + vpTransform[4];
+      const vy = vpTransform[1]*cx + vpTransform[3]*cy + vpTransform[5];
+      return { x: vx, y: vy };
+    };
+    // Fix 1 依赖：setFont 事件收集所有原始字体 alias
+    const operatorFontAliases = new Set();
+    // 累积路径点（constructPath → fill/stroke）
     let pathPts = []; // [{x,y}]
     let pathStart = null;
-    // Bug B 修复：从 operatorList selectFont 事件收集所有原始字体 alias
-    const operatorFontAliases = new Set();
-    // applyCTM：每次调用时用最新的 ctm 合成 vpTransform
-    const applyCTM = (x, y) => {
-      const ft = multiply(vpTransform, ctm);
-      return {
-        x: ft[0]*x + ft[2]*y + ft[4],
-        y: ft[1]*x + ft[3]*y + ft[5]
-      };
-    };
+    // Fix 2 依赖：toByte 必须 hoisted（function 声明），因为 PDF operatorList 跳序执行
+    function toByte(v) {
+      if (typeof v !== 'number') return 0;
+      // PDF 颜色空间：灰度是 0-1 浮点，RGB 三通道也是 0-1 浮点
+      if (v >= 0 && v <= 1 && !Number.isInteger(v)) return Math.round(v * 255);
+      return Math.round(v);
+    }
 
     for (let i = 0; i < fnArr.length; i++) {
       const fn = fnArr[i];
@@ -1866,8 +1870,8 @@
           case OPS.setLeading: { textLeading = args[0] || 0; break; }
           case OPS.moveText: { const [tx, ty] = args; tm = [tm[0],tm[1],tm[2],tm[3], tm[4]+tx, tm[5]+ty]; break; }
           case OPS.nextLine: { tm = [tm[0],tm[1],tm[2],tm[3], 0, tm[5]-textLeading]; break; }
-          // Bug B 修复：selectFont/setFont 事件收集所有字体 alias（operatorList 里出现的原始 alias，不会被归一化）
-          case OPS.selectFont: {
+          // Fix 1 修复：OPS.setFont=37（OPS.selectFont 在 pdf.js 3.x 里是 undefined！）
+          case OPS.setFont: {
             const fontAlias = args[0]; // 如 "g_d5_f1"
             if (fontAlias) {
               if (!operatorFontAliases.has(fontAlias)) {
@@ -1881,29 +1885,32 @@
                       bold: !!fontObj.bold,
                       italic: !!fontObj.italic,
                       fallbackName: fontObj.fallbackName,
-                      source: 'selectFont 事件(await)'
+                      source: 'setFont 事件(await)'
                     };
-                    fontResolveDebug.push({ alias: fontAlias, resolvedName: fontObj.name || fontAlias, bold: fontObj.bold, source: 'selectFont 事件' });
+                    fontResolveDebug.push({ alias: fontAlias, resolvedName: fontObj.name || fontAlias, bold: fontObj.bold, source: 'setFont 事件' });
                   }
                 } catch(e) {
-                  fontResolveDebug.push({ alias: fontAlias, resolvedName: null, bold: null, source: 'selectFont error: ' + e.message.substring(0,60) });
+                  fontResolveDebug.push({ alias: fontAlias, resolvedName: null, bold: null, source: 'setFont error: ' + e.message.substring(0,60) });
                 }
               }
             }
             break;
           }
-          case OPS.setFillRGBColor: curFill = args.map(v=>typeof v==='number'?Math.round(v):0); break;
+          // Fix 2 修复：灰度/RGB 都是 0-1 浮点，需 ×255
+          // 用 function 声明（hoisting）避免 switch TDZ 问题
+          // PDF operatorList 的 fnArr 顺序不保证 case 声明顺序，const let 在 switch 里会 TDZ
+          case OPS.setFillRGBColor: curFill = args.map(toByte); break;
           case OPS.setFillColor:
-            if (args.length===1) curFill=[Math.round(args[0]),Math.round(args[0]),Math.round(args[0])];
-            else if (args.length>=3) curFill=args.slice(0,3).map(v=>typeof v==='number'?Math.round(v):0);
+            if (args.length===1) curFill=[toByte(args[0]),toByte(args[0]),toByte(args[0])];
+            else if (args.length>=3) curFill=args.slice(0,3).map(toByte);
             break;
-          case OPS.setFillGray: curFill=[Math.round(args[0]),Math.round(args[0]),Math.round(args[0])]; break;
-          case OPS.setStrokeRGBColor: curStroke = args.map(v=>typeof v==='number'?Math.round(v):0); break;
+          case OPS.setFillGray: curFill=[toByte(args[0]),toByte(args[0]),toByte(args[0])]; break;
+          case OPS.setStrokeRGBColor: curStroke = args.map(toByte); break;
           case OPS.setStrokeColor:
-            if (args.length===1) curStroke=[Math.round(args[0]),Math.round(args[0]),Math.round(args[0])];
-            else if (args.length>=3) curStroke=args.slice(0,3).map(v=>typeof v==='number'?Math.round(v):0);
+            if (args.length===1) curStroke=[toByte(args[0]),toByte(args[0]),toByte(args[0])];
+            else if (args.length>=3) curStroke=args.slice(0,3).map(toByte);
             break;
-          case OPS.setStrokeGray: curStroke=[Math.round(args[0]),Math.round(args[0]),Math.round(args[0])]; break;
+          case OPS.setStrokeGray: curStroke=[toByte(args[0]),toByte(args[0]),toByte(args[0])]; break;
           case OPS.setLineWidth: curLineWidth = args[0] || 1; break;
           case OPS.rectangle: {
             const [x,y,w,h] = args;
