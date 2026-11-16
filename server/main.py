@@ -137,7 +137,7 @@ def verify_self_contained_code(code: str) -> dict:
     成功返回 {"ok": True, "plan": str, "expires_at": str|None}
     失败返回 {"ok": False, "reason": str}
     """
-    code = code.strip().upper()
+    code = code.strip()  # 注意：base64url 大小写敏感，禁止 .upper()！
     if not code.startswith("RE-"):
         return {"ok": False, "reason": "不是 RE- 前缀的自包含兑换码"}
     if not config.SERVER_SECRET:
