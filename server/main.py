@@ -667,7 +667,7 @@ def activate_code(req: ActivateRequest, request: Request):
     """
     ip = get_client_ip(request)
     uid = uid_from_request(request)
-    code = req.code.strip().upper()
+    code = req.code.strip()  # base64url 大小写敏感，禁止 .upper()！
 
     # 分支：RE- 自包含 vs legacy 一次性
     if code.startswith("RE-"):
