@@ -1746,38 +1746,66 @@
     let textLeading = 0;
     // 报告P1 粗体修复：追踪字体别名→真实字体名映射（pdf.js fontName 是 g_d0_f1 别名，不含 Bold 字样）
     const fontFamilyMap = {}; // { 'g_d0_f1': { name: 'AlibabaPuHuiTi-Bold', bold: true } }
-    // 扫描 page.objs 拿字体字典（key 是字体名/别名，value 有 name 字段）
+    const classifyFont = (realName) => {
+      if (!realName) return null;
+      const n = realName.toLowerCase();
+      return {
+        name: realName,
+        bold: /bold|black|heavy|extrabold|semibold|demibold|medium|conbold/i.test(n),
+        italic: /italic|oblique/i.test(n),
+      };
+    };
+    const objs = page.objs || page.commonObjs;
     try {
-      const objs = page.objs || page.commonObjs;
-      if (objs) {
-        const fn = typeof objs.get === 'function' ? (k => { try { return objs.get(k); } catch(e) { return null; } }) : (k => objs[k]);
-        // pdf.js 字体对象：{ name: 'AlibabaPuHuiTi-Bold', loadedName: 'Font_1', fontDescriptor: {...} }
-        // 遍历 fontResources 或直接扫描 page.commonObjs
-        const fontResources = page.fontResources || page._fontResources || {};
-        for (const [alias, fontObj] of Object.entries(fontResources)) {
-          if (fontObj && fontObj.name) {
-            const n = (fontObj.name || '').toLowerCase();
-            fontFamilyMap[alias] = {
-              name: fontObj.name,
-              bold: /bold|black|heavy|extrabold|semibold|demibold|medium|conbold/i.test(n),
-              italic: /italic|oblique/i.test(n),
-            };
+      // 路径1: page.fontResources / page._fontResources（旧版 pdf.js）
+      const fontResources = page.fontResources || page._fontResources || {};
+      for (const [alias, fontObj] of Object.entries(fontResources)) {
+        if (fontObj && fontObj.name && !fontFamilyMap[alias]) {
+          const info = classifyFont(fontObj.name);
+          if (info) fontFamilyMap[alias] = info;
+        }
+      }
+      // 路径2: page.commonObjs 遍历（旧版 pdf.js）
+      if (objs && typeof objs.forEach === 'function') {
+        objs.forEach((obj, alias) => {
+          if (obj && obj.name && typeof obj.name === 'string' && !fontFamilyMap[alias]) {
+            const info = classifyFont(obj.name);
+            if (info) fontFamilyMap[alias] = info;
+          }
+        });
+      }
+      // 路径3: pdf.js 新版 _transport.fontLoader.nativeFontFaces
+      try {
+        const fl = page._transport?.fontLoader || (page.commonObjs?._transport?.fontLoader);
+        if (fl) {
+          // nativeFontFaces 可能是 Map 或 Object
+          const nff = fl.nativeFontFaces;
+          if (nff) {
+            const entries = nff instanceof Map ? Array.from(nff.entries()) : Object.entries(nff);
+            for (const [alias, face] of entries) {
+              if (face && !fontFamilyMap[alias]) {
+                const family = face.family || face.name || (face.cssFamily && face.cssFamily.replace(/^"|"$/g, ''));
+                if (family) {
+                  const info = classifyFont(family);
+                  if (info) fontFamilyMap[alias] = info;
+                }
+              }
+            }
           }
         }
-        // pdf.js 新版：从 page.objs 扫所有含 name 的对象
-        if (typeof objs.forEach === 'function') {
-          objs.forEach((obj, alias) => {
-            if (obj && obj.name && typeof obj.name === 'string' && /bold|font|medium|regular|italic|black|heavy/i.test(obj.name)) {
-              const n = obj.name.toLowerCase();
-              fontFamilyMap[alias] = {
-                name: obj.name,
-                bold: /bold|black|heavy|extrabold|semibold|demibold|medium|conbold/i.test(n),
-                italic: /italic|oblique/i.test(n),
-              };
+      } catch(e) {}
+      // 路径4: document.fonts（CSS FontFaceSet），pdf.js 加载字体后注册到这里
+      try {
+        if (document.fonts && document.fonts.forEach) {
+          document.fonts.forEach(face => {
+            const family = face.family?.replace(/^"|"$/g, '') || '';
+            if (family) {
+              const info = classifyFont(family);
+              if (info && !fontFamilyMap[family]) fontFamilyMap[family] = info;
             }
           });
         }
-      }
+      } catch(e) {}
     } catch(e) { errors.push('fontMap: ' + e.message); }
     // CTM: 当前变换矩阵 [a,b,c,d,e,f]，默认单位矩阵
     let ctm = [1,0,0,1,0,0];
