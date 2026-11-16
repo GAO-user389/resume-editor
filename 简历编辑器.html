@@ -1807,13 +1807,42 @@
     // CTM: 当前变换矩阵 [a,b,c,d,e,f]，默认单位矩阵
     let ctm = [1,0,0,1,0,0];
     const ctmStack = [];
+    // Bug A 修复：拿到 viewport transform，合成到 applyCTM 中
+    // pdf.js viewport.transform 把 PDF 用户空间坐标（y 从底向上）
+    // 映射到页面像素坐标（y 从上到下），包含 scale 和 y 翻转
+    let vpTransform = [1,0,0,1,0,0];
+    try {
+      const vp = page.getViewport({ scale: 1 });
+      if (vp && vp.transform) vpTransform = vp.transform.slice();
+      else if (vp) {
+        // 自己构造：scale_x, 0, 0, -scale_y, -page_x_offset, page_y (y 翻转)
+        vpTransform = [1, 0, 0, -1, 0, vp.height || pageH];
+      }
+    } catch(e) { errors.push('viewport transform: ' + e.message); }
+    // 把两个 6 元素仿射变换矩阵相乘：res = A × B
+    const multiply = (A, B) => [
+      A[0]*B[0] + A[2]*B[1],
+      A[1]*B[0] + A[3]*B[1],
+      A[0]*B[2] + A[2]*B[3],
+      A[1]*B[2] + A[3]*B[3],
+      A[0]*B[4] + A[2]*B[5] + A[4],
+      A[1]*B[4] + A[3]*B[5] + A[5],
+    ];
+    // 最终坐标 = viewportTransform × contentCTM × (x,y)
+    const fullTransform = multiply(vpTransform, ctm);
     // 累积路径点
     let pathPts = []; // [{x,y}]
     let pathStart = null;
-    const applyCTM = (x, y) => ({
-      x: ctm[0]*x + ctm[2]*y + ctm[4],
-      y: ctm[1]*x + ctm[3]*y + ctm[5]
-    });
+    // Bug B 修复：从 operatorList selectFont 事件收集所有原始字体 alias
+    const operatorFontAliases = new Set();
+    // applyCTM：每次调用时用最新的 ctm 合成 vpTransform
+    const applyCTM = (x, y) => {
+      const ft = multiply(vpTransform, ctm);
+      return {
+        x: ft[0]*x + ft[2]*y + ft[4],
+        y: ft[1]*x + ft[3]*y + ft[5]
+      };
+    };
 
     for (let i = 0; i < fnArr.length; i++) {
       const fn = fnArr[i];
@@ -1832,11 +1861,37 @@
             ctm = [a*o[0]+c*o[1], b*o[0]+d*o[1], a*o[2]+c*o[3], b*o[2]+d*o[3], a*o[4]+c*o[5]+e, b*o[4]+d*o[5]+f];
             break;
           }
-          // 报告P1 颜色/粗体：text state 追踪（setTextMatrix/setLeading/moveText/nextLine/selectFont）
+          // 报告P1 颜色/粗体：text state 追踪
           case OPS.setTextMatrix: { const [a,b,c,d,e,f] = args; tm = [a,b,c,d,e,f]; break; }
           case OPS.setLeading: { textLeading = args[0] || 0; break; }
           case OPS.moveText: { const [tx, ty] = args; tm = [tm[0],tm[1],tm[2],tm[3], tm[4]+tx, tm[5]+ty]; break; }
           case OPS.nextLine: { tm = [tm[0],tm[1],tm[2],tm[3], 0, tm[5]-textLeading]; break; }
+          // Bug B 修复：selectFont/setFont 事件收集所有字体 alias（operatorList 里出现的原始 alias，不会被归一化）
+          case OPS.selectFont: {
+            const fontAlias = args[0]; // 如 "g_d5_f1"
+            if (fontAlias) {
+              if (!operatorFontAliases.has(fontAlias)) {
+                operatorFontAliases.add(fontAlias);
+                // 立即尝试 resolve 这个字体
+                try {
+                  const fontObj = await page.commonObjs.get(fontAlias);
+                  if (fontObj) {
+                    fontFamilyMap[fontAlias] = {
+                      name: fontObj.name || fontAlias,
+                      bold: !!fontObj.bold,
+                      italic: !!fontObj.italic,
+                      fallbackName: fontObj.fallbackName,
+                      source: 'selectFont 事件(await)'
+                    };
+                    fontResolveDebug.push({ alias: fontAlias, resolvedName: fontObj.name || fontAlias, bold: fontObj.bold, source: 'selectFont 事件' });
+                  }
+                } catch(e) {
+                  fontResolveDebug.push({ alias: fontAlias, resolvedName: null, bold: null, source: 'selectFont error: ' + e.message.substring(0,60) });
+                }
+              }
+            }
+            break;
+          }
           case OPS.setFillRGBColor: curFill = args.map(v=>typeof v==='number'?Math.round(v):0); break;
           case OPS.setFillColor:
             if (args.length===1) curFill=[Math.round(args[0]),Math.round(args[0]),Math.round(args[0])];
@@ -1926,20 +1981,11 @@
           }
           case OPS.showText:
           case OPS.showSpacedText: {
-            // 报告 v4 修复：按事件顺序 push curFill（一个 showText = 一个颜色事件）
-            // 颜色不在 operatorList 索引里对齐，直接和 getTextContent.items 顺序对应
-            const arr = args;
-            let hasText = false;
-            if (Array.isArray(arr)) {
-              for (const el of arr) {
-                if (typeof el === 'string' && el.trim()) { hasText = true; colors.push(curFill.slice()); }
-                else if (el && typeof el === 'object') {
-                  const s = el.unicode || el.fontChar || '';
-                  if (typeof s === 'string' && s.trim()) { hasText = true; colors.push(curFill.slice()); }
-                }
-              }
-            }
-            if (hasText) textColorsByOrder.push(curFill.slice()); // 只记录真正有文本的 showText
+            // Bug C 修复：无条件记录 curFill（不管 TJ 数组里是字符串/数字/对象）
+            // 原代码用 hasText 判断跳过 TJ 数组的数字字距元素，导致 color events 数量严重不足
+            textColorsByOrder.push(curFill.slice());
+            // colors 数组也同步保留（给旧 fallback 路径用）
+            colors.push(curFill.slice());
             break;
           }
           case OPS.paintImageXObject:
