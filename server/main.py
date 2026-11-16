@@ -321,7 +321,18 @@ def rate_limit_dependency(request: Request):
 # ========== 路由 ==========
 @app.get("/health", tags=["health"])
 def health():
-    return {"status": "ok", "ai_configured": bool(config.AI_API_KEY), "server_secret_configured": bool(config.SERVER_SECRET)}
+    # prompt_04 调试：把 SERVER_SECRET 的真实长度/截断值打出来（不打完整值）
+    env_secret = os.getenv("SERVER_SECRET", "")
+    cs = config.SERVER_SECRET
+    return {
+        "status": "ok",
+        "ai_configured": bool(config.AI_API_KEY),
+        "server_secret_configured": bool(cs),
+        "server_secret_len": len(cs),
+        "server_secret_preview": (cs[:8] + "..." + cs[-4:]) if len(cs) > 12 else repr(cs),
+        "env_secret_len": len(env_secret),
+        "env_secret_preview": (env_secret[:8] + "..." + env_secret[-4:]) if len(env_secret) > 12 else repr(env_secret),
+    }
 
 
 @app.get("/privacy", response_class=HTMLResponse, tags=["privacy"])
