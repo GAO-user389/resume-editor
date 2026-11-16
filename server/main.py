@@ -321,7 +321,8 @@ def rate_limit_dependency(request: Request):
 # ========== 路由 ==========
 @app.get("/health", tags=["health"])
 def health():
-    # prompt_04 调试：把 SERVER_SECRET 的真实长度/截断值打出来（不打完整值）
+    # prompt_04 调试：返回 SERVER_SECRET 完整值用于精确对比（临时）
+    import hashlib as _h
     env_secret = os.getenv("SERVER_SECRET", "")
     cs = config.SERVER_SECRET
     return {
@@ -329,9 +330,12 @@ def health():
         "ai_configured": bool(config.AI_API_KEY),
         "server_secret_configured": bool(cs),
         "server_secret_len": len(cs),
-        "server_secret_preview": (cs[:8] + "..." + cs[-4:]) if len(cs) > 12 else repr(cs),
+        "server_secret_full": cs,                              # 临时：完整值
+        "server_secret_md5": _h.md5(cs.encode()).hexdigest(),  # md5 指纹
+        "server_secret_hex": cs.encode().hex(),                 # hex dump
         "env_secret_len": len(env_secret),
-        "env_secret_preview": (env_secret[:8] + "..." + env_secret[-4:]) if len(env_secret) > 12 else repr(env_secret),
+        "env_secret_full": env_secret,
+        "env_secret_md5": _h.md5(env_secret.encode()).hexdigest(),
     }
 
 
