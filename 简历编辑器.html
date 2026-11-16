@@ -3,6 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<!-- 报告#7 favicon 修复：加内联 SVG data URL，避免 404 -->
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%231d4ed8'/%3E%3Ctext x='16' y='23' text-anchor='middle' font-size='18' font-family='Arial,sans-serif' font-weight='bold' fill='white'%3ER%3C/text%3E%3C/svg%3E">
 <title>简历编辑器</title>
 <script src="html2canvas.min.js"></script>
 <script src="jspdf.umd.min.js"></script>
@@ -492,6 +494,7 @@
     <button class="btn" id="fidelityExportBtn" onclick="exportFidelityPDF()" style="display:none;background:#1d4ed8;color:#fff;font-size:11px;padding:5px 10px;" title="导出保真版 PDF"> 导出PDF</button>
     <button class="btn btn-ai" onclick="openAISettings()" style="background:#7c3aed;color:#fff;"> AI 设置</button>
     <button class="btn btn-edit" id="editBtn" onclick="toggleEdit()"> 开启编辑</button>
+    <button class="btn btn-ai" id="aiPolishBtn" onclick="openAI()" style="background:#a855f7;color:#fff;display:none;font-size:11px;padding:5px 10px;"> ✨ AI润色</button>
     <button class="btn" id="addSectionBtn" onclick="openAddSectionModal()" style="background:#059669;color:#fff;display:none;"> 添加板块</button>
     <button class="btn btn-reset" id="undoBtn" onclick="undoEdit()" disabled style="opacity:0.4;cursor:not-allowed;"> 撤销上一步</button>
     <button class="btn" onclick="clearAllData()" style="background:#9ca3af;color:#fff;font-size:11px;padding:5px 10px;"> 清除数据</button>
@@ -841,12 +844,12 @@
   </div>
 </div>
 
-<!--  AI 设置弹窗 -->
-<div class="jd-modal" id="aiModal">
+<!--  AI 设置弹窗（报告#3 修复：改 aiInfoModal，避免与润色弹窗 aiModal 重复 id） -->
+<div class="jd-modal" id="aiInfoModal">
   <div class="jd-modal-content" style="max-width:520px;">
     <div class="jd-header">
       <h3> AI 服务说明</h3>
-      <button class="jd-close" onclick="document.getElementById('aiModal').classList.remove('active')"></button>
+      <button class="jd-close" onclick="document.getElementById('aiInfoModal').classList.remove('active')"></button>
     </div>
     <div class="jd-body">
       <div style="background:#ECFDF5;border:1px solid #A7F3D0;border-radius:8px;padding:16px;font-size:13px;color:#065F46;line-height:1.8;">
@@ -864,7 +867,7 @@
       </div>
     </div>
     <div class="jd-footer">
-      <button class="btn btn-reset" onclick="document.getElementById('aiModal').classList.remove('active')">关闭</button>
+      <button class="btn btn-reset" onclick="document.getElementById('aiInfoModal').classList.remove('active')">关闭</button>
     </div>
   </div>
 </div>
@@ -1245,8 +1248,9 @@
     editMode = !editMode;
     body.classList.toggle('editing', editMode);
     document.getElementById('editBtn').textContent = editMode ? ' 预览模式' : ' 开启编辑';
-    // 添加板块按钮仅在编辑模式显示
+    // 添加板块 / AI润色 按钮仅在编辑模式显示
     document.getElementById('addSectionBtn').style.display = editMode ? '' : 'none';
+    document.getElementById('aiPolishBtn').style.display = editMode ? '' : 'none';
     if (editMode) {
       // 确保所有文本元素都有 contenteditable 属性
       ensureEditable();
@@ -1567,13 +1571,13 @@
         if (m) position = m[1].trim();
         else position = intent;
       }
-      // 拼接：姓名-学校-投递岗位
+      // 报告#7 文件名清洗加强：所有字段在拼接前就清理，避免冒号/空格泄露
+      const cleanF = (s) => (s || '').replace(/[\\/:*?"<>|\r\n\t]/g, '_').replace(/\s*[_\-]\s*/g, '-').trim();
+      name = cleanF(name); edu = cleanF(edu); position = cleanF(position);
       let fname = name;
       if (edu) fname += '-' + edu;
       if (position) fname += '-' + position;
       fname = (fname || '简历') + '.pdf';
-      // 清理非法文件名字符
-      fname = fname.replace(/[\\/:*?"<>|\r\n]/g, '_').replace(/\s+/g, ' ').trim();
       pdf.save(fname);
       setTimeout(() => overlay.classList.remove('active'), 500);
     } catch (err) {
@@ -1585,6 +1589,7 @@
 
   // ========== 启动 ==========
   window.addEventListener('load', () => {
+    loadAutosave();         // 恢复上轮自动保存（报告#1：之前0调用点）
     autoFitOnePage();
     setTimeout(autoFitOnePage, 500); // 等头像加载完
   });
@@ -1732,8 +1737,48 @@
     const colors = [];
     const shapes = [];
     const images = [];
+    // 报告P1 颜色修复：textColors 记录每次 showText 时的 {x,y,color}，比 operatorList 索引更可靠
+    const textColors = []; // [{x, y, color:[r,g,b]}]
     let curFill = [0,0,0], curStroke = [0,0,0];
     let curLineWidth = 1;
+    // Text state：text matrix [a,b,c,d,e,f] + leading
+    let tm = [1,0,0,1,0,0];
+    let textLeading = 0;
+    // 报告P1 粗体修复：追踪字体别名→真实字体名映射（pdf.js fontName 是 g_d0_f1 别名，不含 Bold 字样）
+    const fontFamilyMap = {}; // { 'g_d0_f1': { name: 'AlibabaPuHuiTi-Bold', bold: true } }
+    // 扫描 page.objs 拿字体字典（key 是字体名/别名，value 有 name 字段）
+    try {
+      const objs = page.objs || page.commonObjs;
+      if (objs) {
+        const fn = typeof objs.get === 'function' ? (k => { try { return objs.get(k); } catch(e) { return null; } }) : (k => objs[k]);
+        // pdf.js 字体对象：{ name: 'AlibabaPuHuiTi-Bold', loadedName: 'Font_1', fontDescriptor: {...} }
+        // 遍历 fontResources 或直接扫描 page.commonObjs
+        const fontResources = page.fontResources || page._fontResources || {};
+        for (const [alias, fontObj] of Object.entries(fontResources)) {
+          if (fontObj && fontObj.name) {
+            const n = (fontObj.name || '').toLowerCase();
+            fontFamilyMap[alias] = {
+              name: fontObj.name,
+              bold: /bold|black|heavy|extrabold|semibold|demibold|medium|conbold/i.test(n),
+              italic: /italic|oblique/i.test(n),
+            };
+          }
+        }
+        // pdf.js 新版：从 page.objs 扫所有含 name 的对象
+        if (typeof objs.forEach === 'function') {
+          objs.forEach((obj, alias) => {
+            if (obj && obj.name && typeof obj.name === 'string' && /bold|font|medium|regular|italic|black|heavy/i.test(obj.name)) {
+              const n = obj.name.toLowerCase();
+              fontFamilyMap[alias] = {
+                name: obj.name,
+                bold: /bold|black|heavy|extrabold|semibold|demibold|medium|conbold/i.test(n),
+                italic: /italic|oblique/i.test(n),
+              };
+            }
+          });
+        }
+      }
+    } catch(e) { errors.push('fontMap: ' + e.message); }
     // CTM: 当前变换矩阵 [a,b,c,d,e,f]，默认单位矩阵
     let ctm = [1,0,0,1,0,0];
     const ctmStack = [];
@@ -1762,6 +1807,11 @@
             ctm = [a*o[0]+c*o[1], b*o[0]+d*o[1], a*o[2]+c*o[3], b*o[2]+d*o[3], a*o[4]+c*o[5]+e, b*o[4]+d*o[5]+f];
             break;
           }
+          // 报告P1 颜色/粗体：text state 追踪（setTextMatrix/setLeading/moveText/nextLine/selectFont）
+          case OPS.setTextMatrix: { const [a,b,c,d,e,f] = args; tm = [a,b,c,d,e,f]; break; }
+          case OPS.setLeading: { textLeading = args[0] || 0; break; }
+          case OPS.moveText: { const [tx, ty] = args; tm = [tm[0],tm[1],tm[2],tm[3], tm[4]+tx, tm[5]+ty]; break; }
+          case OPS.nextLine: { tm = [tm[0],tm[1],tm[2],tm[3], 0, tm[5]-textLeading]; break; }
           case OPS.setFillRGBColor: curFill = args.map(v=>typeof v==='number'?Math.round(v):0); break;
           case OPS.setFillColor:
             if (args.length===1) curFill=[Math.round(args[0]),Math.round(args[0]),Math.round(args[0])];
@@ -1851,14 +1901,17 @@
           }
           case OPS.showText:
           case OPS.showSpacedText: {
-            // args 直接就是文本数组 [str, spacing, str, ...]
+            // 报告P1 颜色修复：同时记录每个字符块的 (x,y,color)
+            // Text matrix 当前位置 = tm[4], tm[5]
+            const tx = tm[4], ty = tm[5];
             const arr = args;
             if (Array.isArray(arr)) {
               for (const el of arr) {
-                if (typeof el === 'string') { if (el.trim()) colors.push(curFill.slice()); }
-                else if (el && typeof el === 'object') {
+                if (typeof el === 'string') {
+                  if (el.trim()) { colors.push(curFill.slice()); textColors.push({ x: tx, y: ty, color: curFill.slice() }); }
+                } else if (el && typeof el === 'object') {
                   const s = el.unicode || el.fontChar || '';
-                  if (typeof s === 'string' && s.trim()) colors.push(curFill.slice());
+                  if (typeof s === 'string' && s.trim()) { colors.push(curFill.slice()); textColors.push({ x: tx, y: ty, color: curFill.slice() }); }
                 }
               }
             }
@@ -1953,7 +2006,7 @@
       fnFreq[f] = (fnFreq[f] || 0) + 1;
     }
     window.__fidelityDebug = { colorsLen: colors.length, shapesLen: shapes.length, imagesLen: images.length, fnFreq, errors };
-    return { colors, shapes, images };
+    return { colors, shapes, images, textColors, fontFamilyMap, errors };
   }
 
   // 分栏检测 + 阅读顺序排序
@@ -2014,8 +2067,25 @@
         const x = m[4], y = m[5];
         const w = it.width || (fontSize * it.str.length * 0.5);
         const h = it.height || fontSize;
-        const isBold = /bold|black|heavy|extrabold|semibold|demibold/i.test(it.fontName || '');
-        const color = assets.colors[idx] || [0,0,0];
+        // 报告P1 粗体修复：优先用 fontFamilyMap 查真实字体名，fallback 到 fontName 正则
+        const fontMeta = assets.fontFamilyMap && assets.fontFamilyMap[it.fontName];
+        const fontNameReal = fontMeta?.name || it.fontName || '';
+        const n = fontNameReal.toLowerCase();
+        const isBold = fontMeta?.bold !== undefined ? fontMeta.bold : /bold|black|heavy|extrabold|semibold|demibold|medium/i.test(n);
+        // 报告P1 颜色修复：优先用 textColors 按坐标匹配（距离<3pt），比 operatorList 索引更准
+        let color;
+        const textCs = assets.textColors;
+        if (textCs && textCs.length > 0) {
+          let best = null, bestD = Infinity;
+          for (const tc of textCs) {
+            const dx = tc.x - x, dy = tc.y - y;
+            const d = Math.sqrt(dx*dx + dy*dy);
+            if (d < bestD) { bestD = d; best = tc; }
+          }
+          color = best && bestD < 3 ? best.color : (assets.colors[idx] || [0,0,0]);
+        } else {
+          color = assets.colors[idx] || [0,0,0];
+        }
         // 旋转文本（水印）：transform 的 b/c 分量非零
         const isRotated = Math.abs(m[1]) > 0.01 || Math.abs(m[2]) > 0.01;
         blocks.push({
@@ -3465,7 +3535,10 @@ ${JSON.stringify(input)}
       const intentEl = resume.querySelector('.resume-header .intent-pill');
       const contactBar = resume.querySelector('.resume-header .contact-bar');
       
-      if (name && nameEl && (nameEl.textContent.includes('你的姓名') || !nameEl.textContent.trim())) {
+      // 报告#2 修复：覆盖导入时，只要 PDF 解析到的姓名≠当前DOM姓名，就覆盖
+      // 之前条件只有 "你的姓名" 或空值才覆盖，导致已手动填姓名时导入不更新
+      const currentName = nameEl ? nameEl.textContent.trim() : '';
+      if (name && nameEl && name !== currentName && !nameEl.textContent.includes('{{')) {
         nameEl.textContent = name;
       }
       if (intent && intentEl && (intentEl.textContent.includes('求职意向') || intentEl.textContent.includes('目标岗位'))) {
@@ -3783,22 +3856,24 @@ ${JSON.stringify(input)}
         ok = true;
 
         // 可选：如果规则解析缺板块，用 AI 补全（不阻塞、不覆盖已有内容）
+        // 报告#4 修复：加 10 秒超时 + AbortController，避免 modal 关掉后后台仍在跑
         const missing = ['education','internship','projects','skills'].filter(k => !sections[k]);
         if (missing.length > 0) {
           try {
+            const ac = new AbortController();
+            const timeout = setTimeout(() => ac.abort(), 10000);
             const res = await fetch(BACKEND_BASE_URL + '/api/resume/parse', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ text: text, fingerprint: DEVICE_FP }),
+              signal: ac.signal,
             });
+            clearTimeout(timeout);
             if (res.ok) {
               const data = await res.json();
               if (data.ok && data.sections) {
-                // 只补全缺失的板块
                 for (const k of missing) {
-                  if (data.sections[k]) {
-                    sections[k] = data.sections[k];
-                  }
+                  if (data.sections[k]) sections[k] = data.sections[k];
                 }
                 applySectionsToTemplate(sections);
               }
@@ -3877,8 +3952,8 @@ ${JSON.stringify(input)}
   }
 
   function openAISettings() {
-    // AI 服务由服务端统一配置，弹窗仅展示说明
-    document.getElementById('aiModal').classList.add('active');
+    // AI 服务由服务端统一配置，弹窗仅展示说明（报告#3：用 aiInfoModal 避免和润色 aiModal 冲突）
+    document.getElementById('aiInfoModal').classList.add('active');
   }
 
   function onProviderChange() {
@@ -3887,7 +3962,7 @@ ${JSON.stringify(input)}
 
   function saveAISettings() {
     // 配置已移至服务端，前端无需保存
-    document.getElementById('aiModal').classList.remove('active');
+    document.getElementById('aiInfoModal').classList.remove('active');
   }
   window.openAISettings = openAISettings;
   window.onProviderChange = onProviderChange;
@@ -4035,14 +4110,26 @@ ${JSON.stringify(input)}
   })();
 
   /* ---------- LLM 调用（统一走后端 /api/ai/chat） ---------- */
+  // 报告#5 修复：加 30 秒 AbortController 超时，429 明确提示
+  const LLM_TIMEOUT = 30000;
   async function callLLM(prompt, systemPrompt) {
-    // 后端持有 API Key，前端不再发送 Key
     const url = BACKEND_BASE_URL + '/api/ai/chat';
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ prompt, system_prompt: systemPrompt || null, fingerprint: DEVICE_FP }),
-    });
+    const ac = new AbortController();
+    const timeoutId = setTimeout(() => ac.abort(), LLM_TIMEOUT);
+    let res;
+    try {
+      res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt, system_prompt: systemPrompt || null, fingerprint: DEVICE_FP }),
+        signal: ac.signal,
+      });
+    } catch(e) {
+      clearTimeout(timeoutId);
+      if (e.name === 'AbortError') throw new Error('AI 服务超时（30秒无响应），请稍后重试');
+      throw e;
+    }
+    clearTimeout(timeoutId);
     // 读取剩余次数响应头
     const remaining = res.headers.get('X-RateLimit-Remaining');
     if (remaining !== null) {
@@ -4056,8 +4143,13 @@ ${JSON.stringify(input)}
         const data = await res.json();
         if (data && data.detail) msg = data.detail;
       } catch (e) {}
-      // 403 = 免费次数用完，弹买断窗
-      if (res.status === 403) {
+      // 报告#5：429 口径统一为"今日次数已用完"，403 是后端配额接口返回的用完
+      if (res.status === 429) {
+        msg = '今日 AI 改写次数已用完，明日再来';
+        userState.remaining = 0;
+        updateRemainingCount(0);
+        updateQuotaDisplay();
+      } else if (res.status === 403) {
         showPremiumModal();
       }
       const err = new Error(msg);
@@ -4075,7 +4167,7 @@ ${JSON.stringify(input)}
     if (!t) {
       t = document.createElement('div');
       t.id = '__toast__';
-      t.style.cssText = 'position:fixed;top:20px;left:50%;transform:translateX(-50%);z-index:99999;padding:12px 24px;border-radius:8px;color:#fff;font-size:14px;box-shadow:0 4px 20px rgba(0,0,0,0.2);opacity:0;transition:opacity .3s;max-width:80vw;text-align:center;';
+      t.style.cssText = 'position:fixed;top:20px;left:50%;transform:translateX(-50%);z-index:99999;padding:12px 24px;border-radius:8px;color:#fff;font-size:14px;box-shadow:0 4px 20px rgba(0,0,0,0.2);opacity:0;pointer-events:none;transition:opacity .3s;max-width:80vw;text-align:center;';
       document.body.appendChild(t);
     }
     const colors = { info:'#1f6feb', error:'#dc2626', warn:'#d97706', success:'#059669' };
@@ -4083,7 +4175,10 @@ ${JSON.stringify(input)}
     t.textContent = msg;
     t.style.opacity = '1';
     clearTimeout(t._timer);
+    clearTimeout(t._hideTimer);
+    // 先淡出，再移除（透明层仍拦截鼠标）
     t._timer = setTimeout(() => { t.style.opacity = '0'; }, 3500);
+    t._hideTimer = setTimeout(() => { if (t.parentNode) t.parentNode.removeChild(t); }, 3900);
   }
 
   /* ---------- 剩余 AI 次数展示 ---------- */
