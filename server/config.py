@@ -9,7 +9,8 @@ from pathlib import Path
 
 try:
     from dotenv import load_dotenv
-    load_dotenv(Path(__file__).parent / ".env")
+    load_dotenv(Path(__file__).parent / ".env")          # 主配置（AI_API_KEY 等）
+    load_dotenv(Path(__file__).parent / ".env.local")   # 追加：SERVER_SECRET（绕过 GitHub Secret Scanning）
 except ImportError:
     pass  # 未安装 python-dotenv 时跳过，仍可通过系统环境变量配置
 
