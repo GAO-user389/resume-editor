@@ -4404,7 +4404,8 @@ ${JSON.stringify(input)}
   async function quickRestoreFromSavedCode() {
     const btn = document.querySelector('#restoreBar button[onclick*="quickRestore"]');
     const orig = btn.textContent; btn.textContent = '恢复中...'; btn.disabled = true;
-    let saved = ''; try { saved = (localStorage.getItem('license_code') || '').trim();  // base64url 大小写敏感 } catch(_) {}
+    let saved = '';
+    try { saved = (localStorage.getItem('license_code') || '').trim(); } catch(_) {}
     const res = await fetch(BACKEND_BASE_URL + '/api/auth/activate', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       credentials: 'include', body: JSON.stringify({ fingerprint: DEVICE_FP, code: saved }),
@@ -4454,7 +4455,7 @@ ${JSON.stringify(input)}
         resultEl.style.color = '#059669';
         // prompt_04：自包含 RE- 码本地保存，换浏览器/清 Cookie 后重新输入即可恢复权益
         if (code.trim().toUpperCase().startsWith('RE-')) {
-          try { localStorage.setItem('license_code', code.trim())  // base64url 大小写敏感，禁止 .toUpperCase(); } catch(_) {}
+          try { localStorage.setItem('license_code', code.trim()); } catch(_) {}
         }
         // 用后端返回的 plan/expires_at/has_premium_templates 更新完整状态
         userState.plan = data.plan || userState.plan;
