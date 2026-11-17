@@ -3709,7 +3709,9 @@ ${JSON.stringify(input)}
     const allSections = resume.querySelectorAll('#resume .section');
     
     function parseDate(line) {
-      const m = line.match(/(\d{4}[\.\-/]\d{1,2}\s*[\-–—至~]\s*(?:\d{4}[\.\-/]?\d{0,2}|至今|现在)|至今|现在)/i);
+      // 原正则基础上新增：年份-年份（无月）、单时间点
+      const re = /(\d{4}[\.\-\/]\d{1,2}\s*[\-–—至~]\s*(?:\d{4}[\.\-\/]?\d{0,2}|至今|现在)|\d{4}\s*[\-–—至~]\s*\d{4}|至今|现在|\d{4}[\.\-\/]\d{1,2}(?![\d\-–—至~]))/i;
+      const m = line.match(re);
       return m ? m[0] : '';
     }
 
