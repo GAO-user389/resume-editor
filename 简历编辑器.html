@@ -102,15 +102,16 @@
   body.editing [contenteditable="true"]:focus {
     outline: 2px solid var(--primary); background: rgba(31,78,121,0.08);
   }
-  /* 板块删除按钮（编辑模式下显示） */
+  /* 板块删除按钮（默认隐藏，只在编辑模式 hover 时显示） */
+  .section-del { display: none !important; }
   body.editing .section { position: relative; }
   body.editing .section .section-del {
     position: absolute; top: -2px; right: -2px; z-index: 10;
     width: 18px; height: 18px; line-height: 16px; text-align: center;
     background: #dc2626; color: #fff; border: none; border-radius: 50%;
-    font-size: 12px; cursor: pointer; display: none; padding: 0;
+    font-size: 12px; cursor: pointer; padding: 0;
   }
-  body.editing .section:hover .section-del { display: block; }
+  body.editing .section:hover .section-del { display: block !important; }
   /* 整块编辑模式 */
   body.block-editing .section,
   body.block-editing .resume-header {
