@@ -2267,6 +2267,13 @@
   // 保真渲染：把 ResumeDoc 按 bbox 绝对定位渲染到 #fidelityCanvas
   function renderDocFidelity(doc) {
     const canvas = document.getElementById('fidelityCanvas');
+    // 保真模式证件照 overlay 保留：先存起来，innerHTML 重建后再挂回去
+    const photoOverlay = document.getElementById('fidelityPhotoOverlay');
+    const photoSrc = photoOverlay?.src || null;
+    const photoLeft = photoOverlay?.style.left || '';
+    const photoTop = photoOverlay?.style.top || '';
+    const photoRight = photoOverlay?.style.right || '';
+    const photoBottom = photoOverlay?.style.bottom || '';
     canvas.innerHTML = '';
     if (!doc || !doc.pages.length) return;
 
@@ -2329,6 +2336,17 @@
       wrapper.appendChild(pageEl);
       canvas.appendChild(wrapper);
     });
+    // 保真模式证件照 overlay 恢复：innerHTML 清掉后重建挂回
+    if (photoSrc) {
+      syncFidelityPhotoOverlay(photoSrc);
+      const overlay = document.getElementById('fidelityPhotoOverlay');
+      if (overlay) {
+        if (photoLeft) overlay.style.left = photoLeft;
+        if (photoTop) overlay.style.top = photoTop;
+        if (photoRight) overlay.style.right = photoRight;
+        if (photoBottom) overlay.style.bottom = photoBottom;
+      }
+    }
   }
 
   // 块编辑：双击文本块进入编辑
@@ -2390,6 +2408,8 @@
       if (redoBtn) redoBtn.style.display = '';
       if (exportBtn) exportBtn.style.display = '';
       renderDocFidelity(currentDoc);
+      // 切到保真模式后自动挂证件照 overlay（如果 localStorage 有）
+      try { const saved = localStorage.getItem(PHOTO_STORAGE_KEY); if (saved) syncFidelityPhotoOverlay(saved); } catch(_) {}
       showToast('已切换到保真模式（双击文字可编辑）', 'info');
     } else {
       renderMode = 'reflow';
@@ -5290,6 +5310,7 @@ ${userPrompt || '（无）'}
   })();
 
   // 头像上传
+  const PHOTO_STORAGE_KEY = 'resume_avatar_dataurl';
   function handleAvatarUpload(input) {
     const file = input.files[0];
     if (!file) return;
@@ -5297,16 +5318,89 @@ ${userPrompt || '（无）'}
     if (file.size > 5 * 1024 * 1024) { alert('图片不能超过 5MB'); return; }
     const reader = new FileReader();
     reader.onload = function(e) {
+      const dataUrl = e.target.result;
+      // 1. 重排模式头像
       const avatar = document.querySelector('.avatar');
       if (avatar) {
-        avatar.src = e.target.result;
+        avatar.src = dataUrl;
         avatar.removeAttribute('title');
         avatar.style.cursor = 'default';
         avatar.style.borderRadius = '4px';
       }
+      // 2. 保真模式 overlay（如果正在保真模式）
+      syncFidelityPhotoOverlay(dataUrl);
+      // 3. localStorage 持久化
+      try { localStorage.setItem(PHOTO_STORAGE_KEY, dataUrl); } catch(_) {}
     };
     reader.readAsDataURL(file);
   }
+
+  // 保真模式证件照 overlay：在 fidelityCanvas 顶部叠加可拖拽的照片
+  function syncFidelityPhotoOverlay(dataUrl) {
+    let overlay = document.getElementById('fidelityPhotoOverlay');
+    if (!overlay) {
+      overlay = document.createElement('img');
+      overlay.id = 'fidelityPhotoOverlay';
+      overlay.draggable = true;
+      overlay.style.cssText = 'position:absolute;top:12px;right:12px;width:90px;height:110px;object-fit:cover;border:2px solid #e5e7eb;border-radius:4px;box-shadow:0 2px 8px rgba(0,0,0,.12);cursor:grab;z-index:50;';
+      // 拖拽定位（简单版：pointerdown + mousemove）
+      let dragging = false, startX = 0, startY = 0, origLeft = 0, origTop = 0;
+      overlay.addEventListener('pointerdown', ev => {
+        dragging = true; overlay.setPointerCapture(ev.pointerId);
+        const rect = overlay.getBoundingClientRect();
+        startX = ev.clientX; startY = ev.clientY;
+        origLeft = rect.left; origTop = rect.top;
+        overlay.style.cursor = 'grabbing';
+      });
+      overlay.addEventListener('pointermove', ev => {
+        if (!dragging) return;
+        const dx = ev.clientX - startX, dy = ev.clientY - startY;
+        const parent = overlay.parentElement;
+        const prect = parent.getBoundingClientRect();
+        overlay.style.left = (origLeft - prect.left + dx) + 'px';
+        overlay.style.top = (origTop - prect.top + dy) + 'px';
+        overlay.style.right = 'auto'; overlay.style.bottom = 'auto';
+      });
+      const stopDrag = () => { dragging = false; overlay.style.cursor = 'grab'; };
+      overlay.addEventListener('pointerup', stopDrag);
+      overlay.addEventListener('pointercancel', stopDrag);
+      // 双击打开上传
+      overlay.addEventListener('dblclick', () => document.getElementById('avatarUpload').click());
+      // 右键删除
+      overlay.addEventListener('contextmenu', ev => {
+        ev.preventDefault();
+        if (confirm('移除证件照？')) {
+          overlay.remove();
+          try { localStorage.removeItem(PHOTO_STORAGE_KEY); } catch(_) {}
+        }
+      });
+    }
+    overlay.src = dataUrl;
+    // 插入到 fidelityCanvas wrapper（如果 canvas 可见）
+    const canvas = document.getElementById('fidelityCanvas');
+    if (canvas && canvas.style.display !== 'none') {
+      canvas.appendChild(overlay);
+    }
+  }
+
+  // 页面加载时恢复已存的证件照（重排模式头像 + 保真模式 overlay 均支持）
+  (function restoreSavedPhoto() {
+    try {
+      const saved = localStorage.getItem(PHOTO_STORAGE_KEY);
+      if (!saved) return;
+      // 重排模式头像
+      const avatar = document.querySelector('.avatar');
+      if (avatar) { avatar.src = saved; avatar.style.borderRadius = '4px'; avatar.style.cursor = 'default'; }
+      // 保真模式 overlay 等 canvas 出现后再挂
+      const tryAttach = () => {
+        const canvas = document.getElementById('fidelityCanvas');
+        if (canvas && canvas.style.display !== 'none') syncFidelityPhotoOverlay(saved);
+        else setTimeout(tryAttach, 500);
+      };
+      // 等 toggleRenderMode 切换时会再触发，这里先挂到 window
+      window.addEventListener('load', tryAttach);
+    } catch(_) {}
+  })();
 </script>
 
 <!-- 隐藏的头像上传 input -->
