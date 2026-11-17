@@ -498,6 +498,7 @@
     <button class="btn btn-ai" id="aiPolishBtn" onclick="openAI()" style="background:#a855f7;color:#fff;display:none;font-size:11px;padding:5px 10px;"> ✨ AI润色</button>
     <button class="btn" id="addSectionBtn" onclick="openAddSectionModal()" style="background:#059669;color:#fff;display:none;"> 添加板块</button>
     <button class="btn btn-reset" id="undoBtn" onclick="undoEdit()" disabled style="opacity:0.4;cursor:not-allowed;"> 撤销上一步</button>
+    <button class="btn btn-reset" id="redoBtn" onclick="redoEdit()" disabled style="opacity:0.4;cursor:not-allowed;"> 重做 ↷</button>
     <button class="btn" onclick="clearAllData()" style="background:#9ca3af;color:#fff;font-size:11px;padding:5px 10px;"> 清除数据</button>
     <button class="btn" onclick="openFeedbackModal()" style="background:#ec4899;color:#fff;font-size:11px;padding:5px 10px;"> 💬 反馈</button>
     <span id="feedbackBadge" onclick="openMyTickets()" style="display:none;font-size:10px;background:#10b981;color:#fff;padding:2px 8px;border-radius:10px;cursor:pointer;margin-right:4px;" title="点击查看回复">📬 有回复</span>
@@ -1193,6 +1194,7 @@
   const SAVE_KEY = 'resume_autosave_html';
   const JD_INFO_KEY = 'resume_jd_info';
   let history = [];
+  let redoHistory = [];  // FAIL7: 普通编辑模式重做栈
   const MAX_HISTORY = 30;
 
   function pushHistory() {
@@ -1207,7 +1209,9 @@
     if (history.length > 0 && history[history.length-1] === snap) return;
     history.push(snap);
     if (history.length > MAX_HISTORY) history.shift();
+    redoHistory = [];  // FAIL7: 新操作清空重做栈（用户有了新动作就不能重做之前撤销的）
     updateUndoBtn();
+    updateRedoBtn();
   }
   function undoEdit() {
     // 如果有待保存的输入，立即落盘再撤销
@@ -1217,7 +1221,8 @@
       pushHistory();
     }
     if (history.length < 2) return;
-    history.pop(); // 弹出当前
+    const current = history.pop();  // FAIL7: 弹当前 → 推入重做栈
+    redoHistory.push(current);
     const prev = history[history.length - 1];
     // 报告 v4 修复：恢复 innerHTML 前保护 fidelityCanvas
     const resume = document.getElementById('resume');
@@ -1232,12 +1237,45 @@
       refreshSectionDelButtons();
     }
     updateUndoBtn();
+    updateRedoBtn();  // FAIL7
     showSaveStatus('已撤销到上一步');
+    autoFitOnePage();
+  }
+  function redoEdit() {
+    // FAIL7: 普通编辑模式重做（与 undoEdit 对称）
+    if (!redoHistory.length) return;
+    const snap = redoHistory.pop();          // 从重做栈取出
+    history.push(snap);                      // 回到历史栈
+    if (history.length > MAX_HISTORY) history.shift();
+    // 恢复 innerHTML（同 undoEdit 保护 fidelityCanvas）
+    const resume = document.getElementById('resume');
+    const fc = resume.querySelector('#fidelityCanvas');
+    resume.innerHTML = snap;
+    if (fc && !resume.querySelector('#fidelityCanvas')) resume.appendChild(fc);
+    if (editMode) {
+      ensureEditable();
+      resume.querySelectorAll('[contenteditable]').forEach(el => el.setAttribute('contenteditable', 'true'));
+      resume.querySelectorAll('.section-del').forEach(b => b.remove());
+      refreshSectionDelButtons();
+    }
+    updateUndoBtn();
+    updateRedoBtn();
+    showSaveStatus('已重做');
     autoFitOnePage();
   }
   function updateUndoBtn() {
     const btn = document.getElementById('undoBtn');
     if (history.length >= 2) {
+      btn.disabled = false; btn.style.opacity = '1'; btn.style.cursor = 'pointer';
+    } else {
+      btn.disabled = true; btn.style.opacity = '0.4'; btn.style.cursor = 'not-allowed';
+    }
+  }
+  function updateRedoBtn() {
+    // FAIL7: 更新重做按钮状态（存在即更新，不存在跳过）
+    const btn = document.getElementById('redoBtn');
+    if (!btn) return;
+    if (redoHistory.length > 0) {
       btn.disabled = false; btn.style.opacity = '1'; btn.style.cursor = 'pointer';
     } else {
       btn.disabled = true; btn.style.opacity = '0.4'; btn.style.cursor = 'not-allowed';
@@ -1440,11 +1478,17 @@
       window._fitTimer = setTimeout(autoFitOnePage, 400);
     }
   });
-  // Ctrl/Cmd+Z 撤销
+  // Ctrl/Cmd+Z 撤销；Ctrl+Shift+Z / Ctrl+Y 重做（FAIL7）
   document.addEventListener('keydown', e => {
-    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && !e.shiftKey) {
+    const isCtrl = e.ctrlKey || e.metaKey;
+    if (!isCtrl) return;
+    const k = e.key.toLowerCase();
+    if (k === 'z' && !e.shiftKey) {
       e.preventDefault();
       if (editMode) undoEdit();
+    } else if ((k === 'z' && e.shiftKey) || k === 'y') {
+      e.preventDefault();
+      if (editMode) redoEdit();
     }
   });
 
