@@ -1076,6 +1076,18 @@
 
     <div style="font-size:12px;color:#9ca3af;text-align:center;margin-bottom:4px;">💡 也可以直接发邮件到 <b>XGTX20020526@163.com</b> 附付款截图</div>
     </div>
+
+    <!-- prompt_04 FAIL项3修复：恢复权益提示条，默认隐藏，showPremiumModal() 时动态控制 -->
+    <div id="restoreBar" style="display:none;background:linear-gradient(135deg,#10b98122,#34d39922);border:1px solid #10b981;border-radius:8px;padding:12px 14px;margin:0 0 12px;font-size:13px;color:#065f46;align-items:center;gap:10px;">
+      <span style="font-size:18px;">🔑</span>
+      <div style="flex:1;">
+        <div style="font-weight:600;">检测到你有已保存的激活码</div>
+        <div id="restoreBarCode" style="font-size:11px;color:#047857;margin-top:2px;"></div>
+      </div>
+      <button onclick="quickRestoreFromSavedCode()" style="background:#10b981;color:white;border:none;border-radius:6px;padding:6px 14px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap;">一键恢复</button>
+      <button onclick="dismissRestoreBar()" style="background:transparent;color:#065f46;border:none;font-size:16px;cursor:pointer;opacity:0.6;" title="不再提示">✕</button>
+    </div>
+
     <div style="margin:16px 0;">
       <label style="font-size:13px;color:#374151;font-weight:500;">输入激活码：</label>
       <input type="text" id="activateCodeInput" placeholder="RESUME-XXXX-XXXX-XXXX" 
@@ -4119,9 +4131,7 @@ ${JSON.stringify(input)}
       const res = await fetch(BACKEND_BASE_URL + '/api/auth/identify', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        credentials:
- 'include',  // prompt_04: Cookie uid
-        credentials: 'include',  // prompt_04：自动带 Cookie uid
+        credentials: 'include',  // prompt_04: 自动带 Cookie uid
         body: JSON.stringify({ fingerprint: DEVICE_FP }),  // 保留但后端已忽略
       });
       if (res.ok) {
@@ -4137,8 +4147,48 @@ ${JSON.stringify(input)}
     if (userState.remaining === undefined || userState.remaining === null) userState.remaining = 3;
     if (!userState.plan) userState.plan = 'free';
     updateQuotaDisplay();
+    // prompt_04 FAIL项3修复：如果用户有本地存的 RE- 码 + 当前是 free，静默用该码恢复权益
+    tryAutoRestoreFromLicenseCode();
     // 后续功能也加 try 隔离
     try { checkMyTickets(); setInterval(checkMyTickets, 30000); } catch(e) { console.warn('tickets check:', e.message); }
+  }
+  async function tryAutoRestoreFromLicenseCode() {
+    /** prompt_04 FAIL项3修复：用 localStorage 里存的 RE- 码自动恢复权益。
+     *  场景：清 Cookie / 换浏览器 / 换设备后，用户重新访问 → identify 回来是 free →
+     *  如果之前 activate 成功时存过 RE- 码（activate 已写 localStorage），用它对当前
+     *  Cookie uid 调 activate，权益自动恢复。静默执行，不弹窗不打扰。 */
+    if (userState.is_premium || userState.plan !== 'free') return;  // 已是付费态就不做
+    let savedCode = null;
+    try { savedCode = localStorage.getItem('license_code'); } catch(_) {}
+    if (!savedCode || typeof savedCode !== 'string') return;
+    savedCode = savedCode.trim().toUpperCase();
+    if (!savedCode.startsWith('RE-')) return;  // 只处理自包含码
+    try {
+      const res = await fetch(BACKEND_BASE_URL + '/api/auth/activate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ fingerprint: DEVICE_FP, code: savedCode }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        userState.is_premium = true;
+        userState.plan = data.plan || userState.plan;
+        userState.expires_at = data.expires_at || null;
+        userState.has_premium_templates = !!data.has_premium_templates;
+        userState.remaining = -1;
+        updateQuotaDisplay();
+        console.info('[auto-restore] ✅ 用 saved RE- 码恢复权益成功 plan=' + data.plan);
+      } else {
+        console.info('[auto-restore] saved 码验签未过:', data.message);
+        // 验签未过可能是密钥轮换后的旧码，清掉避免每次 identify 都重试
+        if ((data.message || '').includes('签名无效')) {
+          try { localStorage.removeItem('license_code'); } catch(_) {}
+        }
+      }
+    } catch(e) {
+      console.info('[auto-restore] 网络异常跳过:', e.message);
+    }
   }
   function updateQuotaDisplay() {
     const el = document.getElementById('quotaDisplay');
@@ -4337,6 +4387,48 @@ ${JSON.stringify(input)}
     document.getElementById('premiumModal').classList.add('active');
     document.getElementById('activateCodeInput').value = '';
     document.getElementById('activateResult').textContent = '';
+    // prompt_04 FAIL项3修复：如果有本地存的 RE- 码，显示恢复提示条
+    const bar = document.getElementById('restoreBar');
+    const codeLabel = document.getElementById('restoreBarCode');
+    try {
+      const saved = (localStorage.getItem('license_code') || '').trim().toUpperCase();
+      if (saved.startsWith('RE-')) {
+        bar.style.display = 'flex';
+        codeLabel.textContent = saved.slice(0, 10) + '...' + saved.slice(-6) + '（点击恢复到当前设备）';
+      } else {
+        bar.style.display = 'none';
+      }
+    } catch(_) { bar.style.display = 'none'; }
+  }
+  // prompt_04 FAIL项3修复：一键用本地存的 RE- 码恢复权益
+  async function quickRestoreFromSavedCode() {
+    const btn = document.querySelector('#restoreBar button[onclick*="quickRestore"]');
+    const orig = btn.textContent; btn.textContent = '恢复中...'; btn.disabled = true;
+    let saved = ''; try { saved = (localStorage.getItem('license_code') || '').trim().toUpperCase(); } catch(_) {}
+    const res = await fetch(BACKEND_BASE_URL + '/api/auth/activate', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      credentials: 'include', body: JSON.stringify({ fingerprint: DEVICE_FP, code: saved }),
+    });
+    const data = await res.json();
+    btn.textContent = orig; btn.disabled = false;
+    const resultEl = document.getElementById('activateResult');
+    if (data.ok) {
+      resultEl.textContent = '✓ 已恢复到 ' + (data.plan === 'permanent' ? '永久版' : '30天版');
+      resultEl.style.color = '#059669';
+      userState.is_premium = true; userState.plan = data.plan || userState.plan;
+      userState.expires_at = data.expires_at; userState.remaining = -1;
+      if (data.has_premium_templates !== undefined) userState.has_premium_templates = data.has_premium_templates;
+      updateQuotaDisplay();
+      document.getElementById('restoreBar').style.display = 'none';
+      setTimeout(() => document.getElementById('premiumModal').classList.remove('active'), 1200);
+    } else {
+      resultEl.textContent = '✗ ' + (data.message || '恢复失败');
+      resultEl.style.color = '#dc2626';
+    }
+  }
+  function dismissRestoreBar() {
+    document.getElementById('restoreBar').style.display = 'none';
+    try { localStorage.removeItem('license_code'); } catch(_) {}
   }
   async function submitActivateCode() {
     const code = document.getElementById('activateCodeInput').value.trim();
@@ -4353,9 +4445,7 @@ ${JSON.stringify(input)}
       const res = await fetch(BACKEND_BASE_URL + '/api/auth/activate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        credentials:
- 'include',  // prompt_04: Cookie uid
-        credentials: 'include',  // prompt_04：自动带 Cookie uid
+        credentials: 'include',  // prompt_04: 自动带 Cookie uid
         body: JSON.stringify({ fingerprint: DEVICE_FP, code }),  // 保留但后端已忽略 fingerprint
       });
       const data = await res.json();
