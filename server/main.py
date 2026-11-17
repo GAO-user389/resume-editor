@@ -137,29 +137,23 @@ def verify_self_contained_code(code: str) -> dict:
     成功返回 {"ok": True, "plan": str, "expires_at": str|None}
     失败返回 {"ok": False, "reason": str}
     """
-    code = code.strip()  # 注意：base64url 大小写敏感，禁止 .upper()！
+    code = code.strip()  # base64url 大小写敏感，禁止 .upper()！
     if not code.startswith("RE-"):
         return {"ok": False, "reason": "不是 RE- 前缀的自包含兑换码"}
     if not config.SERVER_SECRET:
         return {"ok": False, "reason": "SERVER_SECRET 未配置"}
 
-    debug = {"code_upper": code, "secret_md5": hashlib.md5(config.SERVER_SECRET.encode()).hexdigest()}
     try:
         rest = code[3:]  # 去掉 "RE-"
         body_part, sig_part = rest.rsplit(".", 1)
-        debug["body_part_len"] = len(body_part)
-        debug["sig_part"] = sig_part
-        debug["sig_part_len"] = len(sig_part)
         # 验签（恒定时间比较）
         expected_sig = _b64url(hmac.new(
             config.SERVER_SECRET.encode(),
             body_part.encode(),
             hashlib.sha256,
         ).digest()[:24])
-        debug["expected_sig"] = expected_sig
-        debug["compare_digest"] = hmac.compare_digest(expected_sig, sig_part)
         if not hmac.compare_digest(expected_sig, sig_part):
-            return {"ok": False, "reason": "签名无效", "_debug": debug}
+            return {"ok": False, "reason": "签名无效"}
 
         payload = json.loads(_b64url_decode(body_part))
         plan = payload.get("plan")
@@ -327,29 +321,7 @@ def rate_limit_dependency(request: Request):
 # ========== 路由 ==========
 @app.get("/health", tags=["health"])
 def health():
-    # prompt_04 调试：返回 SERVER_SECRET 完整值用于精确对比（临时）
-    import hashlib as _h
-    env_secret = os.getenv("SERVER_SECRET", "")
-    cs = config.SERVER_SECRET
-    return {
-        "status": "ok",
-        "ai_configured": bool(config.AI_API_KEY),
-        "server_secret_configured": bool(cs),
-        "server_secret_len": len(cs),
-        "server_secret_full": cs,                              # 临时：完整值
-        "server_secret_md5": _h.md5(cs.encode()).hexdigest(),  # md5 指纹
-        "server_secret_hex": cs.encode().hex(),                 # hex dump
-        "env_secret_len": len(env_secret),
-        "env_secret_full": env_secret,
-        "env_secret_md5": _h.md5(env_secret.encode()).hexdigest(),
-    }
-
-
-@app.get("/debug/verify-code", tags=["debug"])
-def debug_verify(code: str):
-    """临时 debug 端点：传入 RE- 码，返回 Render 上 verify 的完整中间值。"""
-    result = verify_self_contained_code(code)
-    return JSONResponse(content=result)
+    return {"status": "ok", "ai_configured": bool(config.AI_API_KEY), "server_secret_configured": bool(config.SERVER_SECRET)}
 
 
 @app.get("/privacy", response_class=HTMLResponse, tags=["privacy"])
