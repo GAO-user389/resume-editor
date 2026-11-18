@@ -1216,6 +1216,41 @@ def admin_issue_code(plan: str = "permanent", count: int = 1, days: int = None,
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/api/admin/apply-rls", tags=["admin"])
+def admin_apply_rls(_: bool = Depends(_require_admin)):
+    """
+    Supabase RLS 安全加固：给三张表启用 Row Level Security。
+    ENABLE ROW LEVEL SECURITY 后，anon/authenticated 角色默认 deny-all，
+    service_role 和 postgres（后端 psycopg2 直连用的 superuser）自动绕过 RLS，
+    所以后端业务不受影响，但通过 PostgREST 暴露的 REST API 会被阻断。
+    """
+    import psycopg2
+
+    with db.get_conn() as conn:
+        cur = conn.cursor()
+        results = {}
+        tables = ["users", "activation_codes", "feedbacks"]
+        for tbl in tables:
+            cur.execute(f"ALTER TABLE public.{tbl} ENABLE ROW LEVEL SECURITY")
+            results[tbl] = "RLS enabled"
+
+        # 验证
+        cur.execute(
+            "SELECT tablename, rowsecurity FROM pg_tables "
+            "WHERE schemaname='public' AND tablename = ANY(%s) "
+            "ORDER BY tablename",
+            (tables,),
+        )
+        verify = [{"table": r[0], "rowsecurity": r[1]} for r in cur.fetchall()]
+
+    return JSONResponse(content={
+        "ok": True,
+        "applied": results,
+        "verified": verify,
+        "note": "RLS 已启用，anon/authenticated 通过 PostgREST 访问会被拒绝，service_role/postgres 不受影响",
+    })
+
+
 @app.get("/api/admin/test-smtp", tags=["admin"])
 def admin_test_smtp(_: bool = Depends(_require_admin)):
     """调试用：同步测试邮件连通性。优先 SendGrid > Resend。"""
