@@ -1219,35 +1219,46 @@ def admin_issue_code(plan: str = "permanent", count: int = 1, days: int = None,
 @app.post("/api/admin/apply-rls", tags=["admin"])
 def admin_apply_rls(request: Request):
     """
-    Supabase RLS 安全加固：给三张表启用 Row Level Security。
+    Supabase RLS 安全加固：自动扫描 public schema 下所有表并启用 Row Level Security。
     鉴权：X-Server-Secret header 必须匹配 SERVER_SECRET 环境变量。
     ENABLE ROW LEVEL SECURITY 后，anon/authenticated 角色默认 deny-all，
     service_role 和 postgres（后端 psycopg2 直连用的 superuser）自动绕过 RLS。
     """
-    # 鉴权：用 SERVER_SECRET header
     provided = request.headers.get("X-Server-Secret", "")
     if provided != config.SERVER_SECRET:
         raise HTTPException(status_code=401, detail="鉴权失败")
 
     with db.get_conn() as conn:
         cur = conn.cursor()
+
+        # 1. 列出 public schema 下所有数据表（排除视图、物化视图）
+        cur.execute(
+            "SELECT tablename FROM pg_tables "
+            "WHERE schemaname='public' AND tablename NOT LIKE 'pg_%' "
+            "ORDER BY tablename"
+        )
+        all_tables = [r[0] for r in cur.fetchall()]
+
+        if not all_tables:
+            return JSONResponse(content={"ok": True, "applied": {}, "note": "public schema 下没有表"})
+
+        # 2. 逐张启用 RLS
         results = {}
-        tables = ["users", "activation_codes", "feedbacks"]
-        for tbl in tables:
+        for tbl in all_tables:
             cur.execute(f"ALTER TABLE public.{tbl} ENABLE ROW LEVEL SECURITY")
             results[tbl] = "RLS enabled"
 
-        # 验证
+        # 3. 验证所有表的 rowsecurity 状态
         cur.execute(
             "SELECT tablename, rowsecurity FROM pg_tables "
-            "WHERE schemaname='public' AND tablename = ANY(%s) "
-            "ORDER BY tablename",
-            (tables,),
+            "WHERE schemaname='public' AND tablename NOT LIKE 'pg_%' "
+            "ORDER BY tablename"
         )
         verify = [{"table": r[0], "rowsecurity": r[1]} for r in cur.fetchall()]
 
     return JSONResponse(content={
         "ok": True,
+        "total_tables": len(all_tables),
         "applied": results,
         "verified": verify,
         "note": "RLS 已启用，anon/authenticated 通过 PostgREST 访问会被拒绝，service_role/postgres 不受影响",
