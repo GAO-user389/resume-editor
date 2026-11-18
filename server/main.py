@@ -1231,6 +1231,17 @@ def admin_apply_rls(request: Request):
     with db.get_conn() as conn:
         cur = conn.cursor()
 
+        # 诊断：public schema 下所有对象类型
+        cur.execute("""
+            SELECT 'table' AS kind, tablename AS name FROM pg_tables WHERE schemaname='public'
+            UNION ALL SELECT 'view', viewname FROM pg_views WHERE schemaname='public'
+            UNION ALL SELECT 'matview', matviewname FROM pg_matviews WHERE schemaname='public'
+            UNION ALL SELECT 'foreign', foreign_table_name
+            FROM information_schema.foreign_tables WHERE foreign_table_schema='public'
+            ORDER BY kind, name
+        """)
+        all_objects = [{"kind": r[0], "name": r[1]} for r in cur.fetchall()]
+
         # 1. 列出 public schema 下所有数据表（排除视图、物化视图）
         cur.execute(
             "SELECT tablename FROM pg_tables "
@@ -1240,7 +1251,7 @@ def admin_apply_rls(request: Request):
         all_tables = [r[0] for r in cur.fetchall()]
 
         if not all_tables:
-            return JSONResponse(content={"ok": True, "applied": {}, "note": "public schema 下没有表"})
+            return JSONResponse(content={"ok": True, "applied": {}, "diagnostic": all_objects, "note": "public schema 下没有表"})
 
         # 2. 逐张启用 RLS
         results = {}
@@ -1259,6 +1270,7 @@ def admin_apply_rls(request: Request):
     return JSONResponse(content={
         "ok": True,
         "total_tables": len(all_tables),
+        "all_public_objects": all_objects,
         "applied": results,
         "verified": verify,
         "note": "RLS 已启用，anon/authenticated 通过 PostgREST 访问会被拒绝，service_role/postgres 不受影响",
