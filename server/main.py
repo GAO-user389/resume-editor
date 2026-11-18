@@ -1217,14 +1217,17 @@ def admin_issue_code(plan: str = "permanent", count: int = 1, days: int = None,
 
 
 @app.post("/api/admin/apply-rls", tags=["admin"])
-def admin_apply_rls(_: bool = Depends(_require_admin)):
+def admin_apply_rls(request: Request):
     """
     Supabase RLS 安全加固：给三张表启用 Row Level Security。
+    鉴权：X-Server-Secret header 必须匹配 SERVER_SECRET 环境变量。
     ENABLE ROW LEVEL SECURITY 后，anon/authenticated 角色默认 deny-all，
-    service_role 和 postgres（后端 psycopg2 直连用的 superuser）自动绕过 RLS，
-    所以后端业务不受影响，但通过 PostgREST 暴露的 REST API 会被阻断。
+    service_role 和 postgres（后端 psycopg2 直连用的 superuser）自动绕过 RLS。
     """
-    import psycopg2
+    # 鉴权：用 SERVER_SECRET header
+    provided = request.headers.get("X-Server-Secret", "")
+    if provided != config.SERVER_SECRET:
+        raise HTTPException(status_code=401, detail="鉴权失败")
 
     with db.get_conn() as conn:
         cur = conn.cursor()
