@@ -1530,23 +1530,34 @@
     const result = document.getElementById('aiResult');
     const applyBtn = document.getElementById('aiApplyBtn');
     loading.style.display = 'inline'; result.style.display = 'none'; applyBtn.style.display = 'none';
-    setTimeout(() => {
+
+    // P1 bug5 fix: 改为真实调用后端 AI API，不再是前端正则替换
+    const systemPrompt = '你是简历优化专家。根据用户指定的润色方向，重写这段简历经历，让它更专业、更有亮点。保持原内容的事实基础和结构，用更职业的表达和更强的行动动词。直接输出润色后的内容，不要加解释。';
+    let userPrompt = `润色方向：${prompt || '专业优化'}\n\n简历内容：\n${text}`;
+
+    fetch(BACKEND_BASE_URL + '/api/ai/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ prompt: userPrompt, system_prompt: systemPrompt, fingerprint: DEVICE_FP }),
+    })
+    .then(r => r.json())
+    .then(data => {
       loading.style.display = 'none';
-      result.textContent = polish(text, prompt);
+      if (data.ok && data.result) {
+        result.textContent = data.result.trim();
+        result.style.display = 'block';
+        applyBtn.style.display = 'inline-block';
+      } else {
+        result.textContent = '润色失败：' + (data.error || '未知错误');
+        result.style.display = 'block';
+      }
+    })
+    .catch(err => {
+      loading.style.display = 'none';
+      result.textContent = '网络错误：' + err.message;
       result.style.display = 'block';
-      applyBtn.style.display = 'inline-block';
-    }, 800 + Math.random() * 500);
-  }
-  function polish(text, prompt) {
-    let r = text;
-    const has = k => prompt.includes(k);
-    if (has('数据') || has('量化')) r = r.replace(/很多|大量/g,'超').replace(/协助/g,'赋能').replace(/降低/g,'压缩').replace(/提高|提升/g,'显著提升');
-    if (has('STAR') || has('专业')) if (r.includes('：')) r = r.replace(/([^：\n]+)：/g,(m,p1)=>{const k=p1.trim(); if(/问题|背景/i.test(k))return'【S】'+k+'：'; if(/方案|设计/i.test(k))return'【T】'+k+'：'; if(/执行|落地/i.test(k))return'【A】'+k+'：'; if(/结果|成效|表现/i.test(k))return'【R】'+k+'：'; return m;});
-    if (has('精简') || has('压缩')) r = r.replace(/为了|为明确|为提升/g,'').replace(/能够|可以成功|最终/g,'');
-    if (has('运营')) r = r.replace(/做了/g,'策划并落地').replace(/负责/g,'牵头负责').replace(/参与/g,'深度参与');
-    if (has('大厂')) r = r.replace(/问题发现/g,'痛点洞察').replace(/方案设计/g,'策略制定').replace(/竞品研究/g,'竞品Benchmark');
-    r = r.replace(/  +/g,' ');
-    return r;
+    });
   }
   function applyResult() {
     const result = document.getElementById('aiResult').textContent;
@@ -1676,7 +1687,9 @@
 
   // ========== 启动 ==========
   window.addEventListener('load', () => {
-    loadAutosave();         // 恢复上轮自动保存（报告#1：之前0调用点）
+    // P0 fix: 禁用自动恢复 localStorage 保存的简历，防止首页显示用户真实简历
+    // 用户之前填的真实信息（高海洋/手机号等）被持久化，每次打开都自动恢复
+    // loadAutosave();
     autoFitOnePage();
     setTimeout(autoFitOnePage, 500); // 等头像加载完
   });
@@ -2667,8 +2680,7 @@
               const resp = await fetch('/api/ai/ocr', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-        credentials:
- 'include',  // prompt_04: Cookie uid
+credentials: 'include',
                 body: JSON.stringify({ image_base64: base64 }),
               });
               if (resp.ok) {
@@ -2775,8 +2787,7 @@
       resp = await fetch('/api/ai/ocr', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        credentials:
- 'include',  // prompt_04: Cookie uid
+credentials: 'include',
         body: JSON.stringify({ image_base64: base64, fingerprint: DEVICE_FP }),
         signal: controller.signal,
       });
@@ -2890,8 +2901,7 @@
       const resp = await fetch('/api/feishu/test', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        credentials:
- 'include',  // prompt_04: Cookie uid
+credentials: 'include',
         body: JSON.stringify({ app_id: appId, app_secret: appSecret }),
       });
       const data = await resp.json();
@@ -2922,8 +2932,7 @@
       const resp = await fetch('/api/feishu/bitable/records', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        credentials:
- 'include',  // prompt_04: Cookie uid
+credentials: 'include',
         body: JSON.stringify(body),
       });
       const data = await resp.json();
@@ -2980,8 +2989,7 @@
       const resp = await fetch('/api/ai/ocr', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        credentials:
- 'include',  // prompt_04: Cookie uid
+credentials: 'include',
         body: JSON.stringify({ image_base64: base64, fingerprint: DEVICE_FP }),
       });
       const data = await resp.json();
@@ -4028,18 +4036,15 @@ ${JSON.stringify(input)}
         applySectionsToTemplate(sections);
         ok = true;
 
-        // 可选：如果规则解析缺板块，用 AI 补全（不阻塞、不覆盖已有内容）
-        // 报告#4 修复：加 10 秒超时 + AbortController，避免 modal 关掉后后台仍在跑
-        const missing = ['education','internship','projects','skills'].filter(k => !sections[k]);
-        if (missing.length > 0) {
-          try {
+        // P1 bug3 fix: 始终用 AI 覆盖补全所有板块（规则解析经常漏内容）
+        // AI 解析比规则解析更准确、覆盖更全，直接覆盖所有板块
+        try {
             const ac = new AbortController();
-            const timeout = setTimeout(() => ac.abort(), 10000);
+            const timeout = setTimeout(() => ac.abort(), 15000);
             const res = await fetch(BACKEND_BASE_URL + '/api/resume/parse', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-        credentials:
- 'include',  // prompt_04: Cookie uid
+              credentials: 'include',
               body: JSON.stringify({ text: text, fingerprint: DEVICE_FP }),
               signal: ac.signal,
             });
@@ -4047,14 +4052,13 @@ ${JSON.stringify(input)}
             if (res.ok) {
               const data = await res.json();
               if (data.ok && data.sections) {
-                for (const k of missing) {
+                for (const k of ['header','education','internship','projects','skills']) {
                   if (data.sections[k]) sections[k] = data.sections[k];
                 }
                 applySectionsToTemplate(sections);
               }
             }
-          } catch(e) { console.warn('AI 补全失败:', e.message); }
-        }
+        } catch(e) { console.warn('AI 补全失败（规则解析已生效）:', e.message); }
       }
     } catch(e) {
       alert('填入失败：' + e.message);
@@ -4309,8 +4313,7 @@ ${JSON.stringify(input)}
         const resp = await fetch('/api/ai/ocr', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-        credentials:
- 'include',  // prompt_04: Cookie uid
+credentials: 'include',
           body: JSON.stringify({ image_base64: base64, fingerprint: DEVICE_FP }),
         });
         const data = await resp.json();
@@ -4339,8 +4342,7 @@ ${JSON.stringify(input)}
       res = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        credentials:
- 'include',  // prompt_04: Cookie uid
+credentials: 'include',
         body: JSON.stringify({ prompt, system_prompt: systemPrompt || null, fingerprint: DEVICE_FP }),
         signal: ac.signal,
       });
@@ -4627,8 +4629,7 @@ ${JSON.stringify(input)}
       const resp = await fetch('/api/feedback/submit', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        credentials:
- 'include',  // prompt_04: Cookie uid
+credentials: 'include',
         body: JSON.stringify({
           fingerprint: window.DEVICE_FP,
           content, contact,
@@ -4662,8 +4663,7 @@ ${JSON.stringify(input)}
       const resp = await fetch('/api/feedback/mine', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        credentials:
- 'include',  // prompt_04: Cookie uid
+credentials: 'include',
         body: JSON.stringify({ fingerprint: window.DEVICE_FP }),
       });
       const data = await resp.json();
@@ -4715,8 +4715,7 @@ ${JSON.stringify(input)}
       const resp = await fetch('/api/feedback/replied', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        credentials:
- 'include',  // prompt_04: Cookie uid
+credentials: 'include',
         body: JSON.stringify({ fingerprint: window.DEVICE_FP }),
       });
       if (!resp.ok) return;
@@ -4757,8 +4756,7 @@ ${JSON.stringify(input)}
     fetch('/api/feedback/replied', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-        credentials:
- 'include',  // prompt_04: Cookie uid
+credentials: 'include',
       body: JSON.stringify({ fingerprint: window.DEVICE_FP }),
     }).then(r => r.json()).then(data => {
       const items = data.items || [];
