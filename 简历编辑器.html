@@ -123,6 +123,17 @@
   body.editing .exp-item:hover .item-del,
   body.editing .edu-item:hover .item-del,
   body.editing .skill-cat:hover .item-del { display: block !important; }
+  /* 条目级新增按钮：只有最后一个条目显示，hover 可见 */
+  body.editing .item-add {
+    position: absolute; top: -2px; right: 18px; z-index: 5;
+    width: 16px; height: 16px; line-height: 14px; text-align: center;
+    background: #059669; color: #fff; border: none; border-radius: 50%;
+    font-size: 11px; cursor: pointer; padding: 0; display: none;
+  }
+  body.editing .exp-item:last-child:hover .item-add,
+  body.editing .edu-item:last-child:hover .item-add,
+  body.editing .skill-cat:last-child:hover .item-add { display: block !important; }
+  body.block-editing .section .item-add { display: none !important; }
   /* 整块编辑模式 */
   body.block-editing .section,
   body.block-editing .resume-header {
@@ -1403,6 +1414,30 @@
         item.appendChild(btn);
       }
     });
+    // 给每个板块的最后一个条目加绿色 + 新增按钮（A-1）
+    // 先清除所有旧的 item-add（让"最后一个"判定重新计算）
+    document.querySelectorAll('#resume .item-add').forEach(b => b.remove());
+    document.querySelectorAll('#resume .section').forEach(sec => {
+      // 判断是什么板块
+      const title = sec.querySelector('.section-title-cn')?.textContent || '';
+      const isSkill = /技能|SKILLS|证书/.test(title);
+      const isEdu = /教育|EDUCATION/.test(title);
+      const lastSel = isSkill ? '.skill-cat:last-child' : (isEdu ? '.edu-item:last-child' : '.exp-item:last-child');
+      const lastItem = sec.querySelector(lastSel);
+      if (!lastItem) return;
+      if (lastItem.querySelector('.item-add')) return;
+      const btn = document.createElement('button');
+      btn.className = 'item-add';
+      btn.type = 'button';
+      btn.textContent = '+';
+      let kind = 'exp';
+      if (isSkill) kind = 'skill';
+      else if (isEdu) kind = 'edu';
+      const labelMap = { skill: '添加一项技能', edu: '添加一段教育', exp: '添加一段经历/项目' };
+      btn.title = labelMap[kind];
+      btn.onclick = (e) => { e.stopPropagation(); addItemToSection(sec, kind); };
+      lastItem.appendChild(btn);
+    });
   }
 
   // ========== 添加 / 删除板块 ==========
@@ -1423,6 +1458,18 @@
     const inner = document.querySelector('#resume .resume-inner');
     if (!inner) return;
     const en = name.replace(/[^\w]/g,'').toUpperCase() || 'SECTION';
+    // A-3: 结构化条目（按名称猜类型）
+    let body = `<div class="section-body" contenteditable="false" style="white-space:pre-wrap;font-size:9.2pt;line-height:1.7;">在此输入${name}内容...</div>`;
+    const n = name.toLowerCase();
+    if (/(教育|学习|学历|EDUCATION|Education)/i.test(name)) {
+      body = `<div class="section-body"><div class="edu-item"><div class="school"><span contenteditable="false">学校名称</span><span class="major">· 专业</span><span class="degree">本科</span></div><div class="date" contenteditable="false">2020.09 – 2024.06</div></div></div>`;
+    } else if (/(实习|工作|经历|经验|实践|WORK|EXPERIENCE|INTERNSHIP)/i.test(name)) {
+      body = `<div class="section-body"><div class="exp-item"><div class="exp-header"><div><span class="company" contenteditable="false">公司名称</span><span class="role">｜职位</span></div><div class="date" contenteditable="false">2024.01 – 至今</div></div><div class="exp-desc" contenteditable="false"><ul><li>工作内容描述…</li><li>成果产出…</li></ul></div></div></div>`;
+    } else if (/(项目|PROJECT)/i.test(name)) {
+      body = `<div class="section-body"><div class="exp-item"><div class="exp-header"><div><span class="company" contenteditable="false">项目名称</span></div><div class="date" contenteditable="false">2024.01 – 至今</div></div><div class="exp-desc" contenteditable="false"><ul><li>项目背景…</li><li>个人贡献…</li></ul></div></div></div>`;
+    } else if (/(技能|能力|技术|SKILLS|CERTIFICATE)/i.test(name)) {
+      body = `<div class="section-body"><div class="skills-grid"><div class="skill-cat"><div class="skill-name" contenteditable="false">技能名称</div><div class="skill-val" contenteditable="false">熟练程度/说明</div></div></div></div>`;
+    }
     const sec = document.createElement('div');
     sec.className = 'section';
     sec.innerHTML = `
@@ -1433,7 +1480,7 @@
       </div>
       <div class="section-divider"></div>
       <div class="section-divider-light"></div>
-      <div class="section-body" contenteditable="false" style="white-space:pre-wrap;font-size:9.2pt;line-height:1.7;">在此输入${name}内容...</div>`;
+      ${body}`;
     inner.appendChild(sec);
     // 同步编辑状态与删除按钮
     if (editMode) {
@@ -1460,6 +1507,50 @@
     pushHistory();
     autoSave();
     autoFitOnePage();
+  }
+  // A-2: 条目级新增函数（被 item-add 按钮调用）
+  function addItemToSection(sectionEl, kind) {
+    const isSkill = kind === 'skill';
+    const isEdu = kind === 'edu';
+    if (isSkill) {
+      let grid = sectionEl.querySelector('.skills-grid');
+      if (!grid) { grid = document.createElement('div'); grid.className = 'skills-grid'; sectionEl.appendChild(grid); }
+      const div = document.createElement('div');
+      div.className = 'skill-cat';
+      div.innerHTML = '<div class="skill-name" contenteditable="false">技能名称</div><div class="skill-val" contenteditable="false">熟练程度/说明</div>';
+      grid.appendChild(div);
+      afterItemAdded(div);
+    } else if (isEdu) {
+      const div = document.createElement('div');
+      div.className = 'edu-item';
+      div.innerHTML = '<div class="school"><span contenteditable="false">学校名称</span><span class="major">· 专业</span><span class="degree">本科</span></div><div class="date" contenteditable="false">2020.09 – 2024.06</div>';
+      sectionEl.appendChild(div);
+      afterItemAdded(div);
+    } else {
+      // exp 区分实习/项目 — 用 section 标题判断
+      const title = sectionEl.querySelector('.section-title-cn')?.textContent || '';
+      const isProject = /项目|PROJECT/.test(title);
+      const div = document.createElement('div');
+      div.className = 'exp-item';
+      div.innerHTML = '<div class="exp-header"><div>' +
+        (isProject ? '' : '<span class="company" contenteditable="false">公司名称</span><span class="role">｜职位</span>') +
+        (isProject ? '<span class="company" contenteditable="false">项目名称</span>' : '') +
+      '</div><div class="date" contenteditable="false">2024.01 – 至今</div></div>' +
+      '<div class="exp-desc" contenteditable="false"><ul><li>工作内容描述…</li><li>成果产出…</li></ul></div>';
+      sectionEl.appendChild(div);
+      afterItemAdded(div);
+    }
+  }
+  function afterItemAdded(newItem) {
+    ensureEditable();
+    document.querySelectorAll('#resume [contenteditable]').forEach(el => el.setAttribute('contenteditable', 'true'));
+    refreshSectionDelButtons();
+    originalSectionOrder = null;
+    pushHistory();
+    autoSave();
+    autoFitOnePage();
+    const first = newItem.querySelector('[contenteditable="false"]');
+    if (first) first.focus();
   }
 
   // ========== 整块编辑模式 ==========
@@ -1608,13 +1699,21 @@
   function autoFitOnePage() {
     const resume = document.getElementById('resume');
     const inner = document.querySelector('.resume-inner');
+    if (!inner) return;
     inner.style.transformOrigin = 'top center';
     inner.style.transform = 'scale(1)';
     resume.style.height = '297mm';
     resume.style.overflow = 'visible';
-    void inner.offsetHeight;
+    // B-1: 先放开 inner 高度，再临时设子项 flex-shrink:0 防止被压缩
+    inner.style.height = 'auto';
+    const kids = Array.from(inner.children);
+    const savedFlex = kids.map(k => k.style.flexShrink);
+    kids.forEach(k => (k.style.flexShrink = '0'));
+    void inner.offsetHeight;            // 强制重排
+    const contentH = inner.scrollHeight; // 此时读到真实内容高
+    kids.forEach((k, i) => (k.style.flexShrink = savedFlex[i]));
+    inner.style.height = '';
     const containerH = resume.clientHeight;
-    const contentH = inner.scrollHeight;
     if (contentH > containerH + 2) {
       const scale = containerH / contentH;
       inner.style.transform = `scale(${scale.toFixed(4)})`;
@@ -3593,6 +3692,12 @@ ${JSON.stringify(input)}
   function isSectionMarkerLine(line) {
     if (!line) return false;
     const orig = line.trim();
+    // B-3 字距标题判定：去空格后匹配已知英文标题词 或 全大写字母串 3-24 字符
+    const noSpace = orig.replace(/\s+/g, '');
+    const EN_MARKERS = ['EDUCATION','EXPERIENCE','WORKEXPERIENCE','INTERN','INTERNSHIP','PROJECT','PROJECTS','SKILLS','CERTIFICATE','CERTIFICATES','QUALIFICATION','QUALIFICATIONS','PERSONALADVANTAGES','ADVANTAGES','ADVANTAGE','PERSONALSUMMARY','SUMMARY','SELFINTRODUCTION','SELFINTRO','ABOUTME','AWARDS','HONORS','ACHIEVEMENTS','EDUCATIONALEXPERIENCE','PROFESSIONALSKILLS','CAREEROBJECTIVE','JOBOBJECTIVE','OBJECTIVE','INTENTION','INTRODUCTION','PROFILE','CERTIFICATION','PROFESSIONAL','EXPERIENCES','RESEARCH','ACTIVITIES','VOLUNTEER','LEADERSHIP','PROJECTEXPERIENCE','EDUCATIONAL','QUALIFICATIONS','CERTIFICATE','CERTIFICATION'];
+    if (/^[A-Za-z]{3,24}$/.test(noSpace) && noSpace === noSpace.toUpperCase() && EN_MARKERS.includes(noSpace)) return true;
+    // 全大写字母 3-24 字符（无数字无中文无标点）——字距标题的通用兜底
+    if (/^[A-Z]{3,24}$/.test(noSpace) && !/[0-9]/.test(noSpace)) return true;
     // 先移除所有空白（含全角空格），避免 "教育 经历" 这类被空格拆开的标题漏判
     let t = orig.replace(/\s+/g, '');
     for (const kw of ALL_MARKER_WORDS) {
@@ -4087,6 +4192,8 @@ ${JSON.stringify(input)}
 
         // 用规则解析结果填入
         applySectionsToTemplate(sections);
+        // B-1: 规则解析填入后立即重算分页
+        autoFitOnePage();
         ok = true;
 
         // P1 bug3 fix: 始终用 AI 覆盖补全所有板块（规则解析经常漏内容）
