@@ -123,16 +123,16 @@
   body.editing .exp-item:hover .item-del,
   body.editing .edu-item:hover .item-del,
   body.editing .skill-cat:hover .item-del { display: block !important; }
-  /* 条目级新增按钮：只有最后一个条目显示，hover 可见 */
+  /* 条目级新增按钮：只在每个板块的最后一个条目上注入（JS 控制），hover 父条目显示 */
   body.editing .item-add {
     position: absolute; top: -2px; right: 18px; z-index: 5;
     width: 16px; height: 16px; line-height: 14px; text-align: center;
     background: #059669; color: #fff; border: none; border-radius: 50%;
     font-size: 11px; cursor: pointer; padding: 0; display: none;
   }
-  body.editing .exp-item:last-child:hover .item-add,
-  body.editing .edu-item:last-child:hover .item-add,
-  body.editing .skill-cat:last-child:hover .item-add { display: block !important; }
+  body.editing .exp-item:hover .item-add,
+  body.editing .edu-item:hover .item-add,
+  body.editing .skill-cat:hover .item-add { display: block !important; }
   body.block-editing .section .item-add { display: none !important; }
   /* 整块编辑模式 */
   body.block-editing .section,
@@ -1422,8 +1422,10 @@
       const title = sec.querySelector('.section-title-cn')?.textContent || '';
       const isSkill = /技能|SKILLS|证书/.test(title);
       const isEdu = /教育|EDUCATION/.test(title);
-      const lastSel = isSkill ? '.skill-cat:last-child' : (isEdu ? '.edu-item:last-child' : '.exp-item:last-child');
-      const lastItem = sec.querySelector(lastSel);
+      // 不用 :last-child —— 因为 .section-del 删除按钮会插在 section 最后，把 last-child 占了
+      const itemCls = isSkill ? 'skill-cat' : (isEdu ? 'edu-item' : 'exp-item');
+      const items = sec.querySelectorAll('.' + itemCls);
+      const lastItem = items[items.length - 1]; // 取最后一个条目
       if (!lastItem) return;
       if (lastItem.querySelector('.item-add')) return;
       const btn = document.createElement('button');
