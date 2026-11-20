@@ -112,6 +112,17 @@
     font-size: 12px; cursor: pointer; padding: 0;
   }
   body.editing .section:hover .section-del { display: block !important; }
+  /* 条目级删除按钮（经历/项目/教育/技能） */
+  body.editing .exp-item, body.editing .edu-item, body.editing .skill-cat { position: relative; }
+  body.editing .item-del {
+    position: absolute; top: -2px; right: -2px; z-index: 5;
+    width: 16px; height: 16px; line-height: 14px; text-align: center;
+    background: #ef4444; color: #fff; border: none; border-radius: 50%;
+    font-size: 11px; cursor: pointer; padding: 0; display: none;
+  }
+  body.editing .exp-item:hover .item-del,
+  body.editing .edu-item:hover .item-del,
+  body.editing .skill-cat:hover .item-del { display: block !important; }
   /* 整块编辑模式 */
   body.block-editing .section,
   body.block-editing .resume-header {
@@ -1380,6 +1391,18 @@
         sec.appendChild(btn);
       }
     });
+    // 给每个经历/项目/教育/技能条目加删除按钮
+    document.querySelectorAll('#resume .exp-item, #resume .edu-item, #resume .skill-cat').forEach(item => {
+      if (!item.querySelector('.item-del')) {
+        const btn = document.createElement('button');
+        btn.className = 'item-del';
+        btn.type = 'button';
+        btn.textContent = '×';
+        btn.title = '删除该条目';
+        btn.onclick = (e) => { e.stopPropagation(); deleteItem(item); };
+        item.appendChild(btn);
+      }
+    });
   }
 
   // ========== 添加 / 删除板块 ==========
@@ -1425,6 +1448,14 @@
   function deleteSection(sec) {
     if (!confirm('确定删除该板块吗？此操作可通过"撤销上一步"恢复。')) return;
     sec.remove();
+    originalSectionOrder = null;
+    pushHistory();
+    autoSave();
+    autoFitOnePage();
+  }
+  function deleteItem(item) {
+    // 不弹确认——条目级删除应该轻量，用 undo 兜底
+    item.remove();
     originalSectionOrder = null;
     pushHistory();
     autoSave();
