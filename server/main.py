@@ -1458,7 +1458,7 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
 
 # ========== 静态资源挂载（必须放在所有路由之后，避免覆盖显式路由）==========
 class SafeStaticFiles(StaticFiles):
-    """只暴露前端资源，禁止访问后端源码、配置、依赖目录。"""
+    """只暴露前端资源，禁止访问后端源码、配置、依赖目录。HTML 文件强制 no-cache。"""
 
     BLOCKED_PREFIXES = (
         "server", ".env", ".env.example", ".git", ".screenshots",
@@ -1474,7 +1474,13 @@ class SafeStaticFiles(StaticFiles):
         if blocked:
             from fastapi import HTTPException
             raise HTTPException(status_code=404)
-        return await super().get_response(normalized, scope)
+        response = await super().get_response(normalized, scope)
+        # 所有 HTML 文件强制 no-cache，防止用户看到旧版本
+        if response and getattr(response, "media_type", "") == "text/html":
+            response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate, max-age=0"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Expires"] = "0"
+        return response
 
 
 app.mount("/", SafeStaticFiles(directory=str(FRONTEND_DIR)), name="frontend")
