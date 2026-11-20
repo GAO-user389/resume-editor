@@ -427,22 +427,25 @@ def parse_resume(req: ResumeParseRequest, request: Request):
     system_prompt = """你是简历结构化解析专家。用户会给你一段从 PDF/Word 简历里提取的纯文本，
 你需要把它拆成以下板块并严格按 JSON 输出（只输出 JSON，不要任何其他文字）：
 
-JSON schema：
+JSON schema — 每个板块都是多行字符串，用 \n 换行：
 {
-  "header": "姓名\n手机\n邮箱\n求职意向...",
-  "education": "辽宁大学 外汇学 硕士 2025.09-2026.08\n新疆财经大学 国际经济与贸易 本科 2020.09-2024.06",
-  "internship": "北京新闻科技有限公司 产品运营实习生 2026.06-2026.08",
-  "projects": "金陵风物志 小红书 vibecoding 大赛参赛作品 2026.06-至今",
-  "skills": "数据分析 Excel SQL...",
+  "header": "姓名\n手机 138xxxx\n邮箱 xxx@xx.com\n求职意向：产品运营实习生",
+  "education": "辽宁大学 外汇学 硕士在读 2025.09-2028.06\n新疆财经大学 国际经济与贸易 本科 2020.09-2024.06",
+  "internship": "北京新闻科技有限公司 产品运营实习生 2026.06-2026.08\n· 产品体验优化：针对 xxx 平台线上问题...\n· AI 产品运营优化：参与 Seedance 2.0 模型测试...",
+  "projects": "金陵风物志 小红书 vibecoding 大赛 2026.06-至今\n· 个人作品：参赛作品 #vibegame 小红书发布...\n· 用户反馈洞察：从社区收集 7 条反馈...",
+  "skills": "招聘渠道运营：熟练运用内推、社群与社交媒体多渠道主动触达候选人\n数据管理与复盘：熟练使用 Excel 完成成绩加权核算、活动台账与数据统计",
   "missing_sections": []
 }
 
-规则：
-1. 每个板块内多条记录用 \n 换行，每条一行
-2. 完整保留所有信息，不要删减
-3. 忽略板块关键词（教育背景/EDUCATION/实习经历/INTERNSHIP/项目经历/PROJECTS/技能/SKILLS）
-4. 没找到的板块设为空字符串
-5. 只输出 JSON，不要 markdown fence 或解释"""
+规则（必须严格遵守）：
+1. 完整保留所有信息，不要删减任何一个项目/实习/技能
+2. 实习/项目板块：每条记录 = 1 行 header（公司｜岗位 时间）+ N 行工作内容（每行 · 或 - 开头）
+3. 实习/项目的工作内容保留原来的 bullet 符号（· 或 -）
+4. 教育板块：每行 = 学校 · 专业 学位 时间
+5. 技能板块：每行 = 技能大类：描述内容（冒号分隔 name 和 desc）
+6. 忽略板块关键词（教育背景/EDUCATION/实习经历/INTERNSHIP/项目经历/PROJECTS/技能/SKILLS）
+7. 没找到的板块设为空字符串 ""
+8. 只输出 JSON，不要 markdown fence 或解释"""
 
     try:
         raw = call_llm(req.text[:15000], system_prompt)
