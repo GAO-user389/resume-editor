@@ -493,6 +493,7 @@
     <button class="btn" id="fidelityUndoBtn" onclick="undoFidelity()" style="display:none;font-size:11px;padding:5px 8px;" title="撤销">↶ 撤销</button>
     <button class="btn" id="fidelityRedoBtn" onclick="redoFidelity()" style="display:none;font-size:11px;padding:5px 8px;" title="重做">↷ 重做</button>
     <button class="btn" id="fidelityExportBtn" onclick="exportFidelityPDF()" style="display:none;background:#1d4ed8;color:#fff;font-size:11px;padding:5px 10px;" title="导出保真版 PDF"> 导出PDF</button>
+    <button class="btn" id="fidelityAvatarBtn" onclick="document.getElementById('avatarUpload').click()" style="display:none;background:#be185d;color:#fff;font-size:11px;padding:5px 10px;" title="上传证件照（双击保真画面已有证件照也可上传）"> 📷 证件照</button>
     <button class="btn btn-ai" onclick="openAISettings()" style="background:#7c3aed;color:#fff;"> AI 设置</button>
     <button class="btn btn-edit" id="editBtn" onclick="toggleEdit()"> 开启编辑</button>
     <button class="btn btn-ai" id="aiPolishBtn" onclick="openAI()" style="background:#a855f7;color:#fff;display:none;font-size:11px;padding:5px 10px;"> ✨ AI润色</button>
@@ -2411,6 +2412,7 @@
     const undoBtn = document.getElementById('fidelityUndoBtn');
     const redoBtn = document.getElementById('fidelityRedoBtn');
     const exportBtn = document.getElementById('fidelityExportBtn');
+    const avatarBtn = document.getElementById('fidelityAvatarBtn');
     if (renderMode === 'reflow') {
       if (!currentDoc) { showToast('请先在上传简历时选择「1:1 保真载入」', 'warn'); return; }
       renderMode = 'fidelity';
@@ -2423,10 +2425,11 @@
       if (undoBtn) undoBtn.style.display = '';
       if (redoBtn) redoBtn.style.display = '';
       if (exportBtn) exportBtn.style.display = '';
+      if (avatarBtn) avatarBtn.style.display = '';
       renderDocFidelity(currentDoc);
       // 切到保真模式后自动挂证件照 overlay（如果 localStorage 有）
       try { const saved = localStorage.getItem(PHOTO_STORAGE_KEY); if (saved) syncFidelityPhotoOverlay(saved); } catch(_) {}
-      showToast('已切换到保真模式（双击文字可编辑）', 'info');
+      showToast('已切换到保真模式（双击文字可编辑，点📷证件照上传头像）', 'info');
     } else {
       renderMode = 'reflow';
       inner.style.display = '';
@@ -2438,6 +2441,7 @@
       if (undoBtn) undoBtn.style.display = 'none';
       if (redoBtn) redoBtn.style.display = 'none';
       if (exportBtn) exportBtn.style.display = 'none';
+      if (avatarBtn) avatarBtn.style.display = 'none';
       showToast('已切换到重排模式（套用编辑器模板）', 'info');
     }
   }
