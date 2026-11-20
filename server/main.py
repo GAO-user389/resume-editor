@@ -337,18 +337,24 @@ def privacy_page():
 # ========== 前端静态资源托管（同源部署用）==========
 FRONTEND_DIR = Path(__file__).parent.parent
 
+_NO_CACHE = {
+    "Cache-Control": "no-cache, no-store, must-revalidate, max-age=0",
+    "Pragma": "no-cache",
+    "Expires": "0",
+}
+
 @app.get("/app", response_class=HTMLResponse, tags=["frontend"])
 def frontend_app():
     """托管前端简历编辑器页面（同源部署时访问 /app）。"""
     html_path = FRONTEND_DIR / "简历编辑器.html"
-    return FileResponse(html_path, media_type="text/html")
+    return FileResponse(html_path, media_type="text/html", headers=_NO_CACHE)
 
 
 @app.get("/", response_class=HTMLResponse, tags=["frontend"])
 def frontend_root():
     """根路径直接返回简历编辑器页面。"""
     html_path = FRONTEND_DIR / "简历编辑器.html"
-    return FileResponse(html_path, media_type="text/html")
+    return FileResponse(html_path, media_type="text/html", headers=_NO_CACHE)
 
 
 @app.post("/api/ai/chat", tags=["ai"], dependencies=[Depends(rate_limit_dependency)])
