@@ -1525,9 +1525,9 @@
         s.appendChild(del);
       }
     });
+    // A-5: 模板加载时也要给所有 exp-desc li 加 bullet 按钮
+    injectBulletBtns();
   }
-
-  // ========== 添加 / 删除板块 ==========
   let blockEditMode = false;
   function openAddSectionModal() {
     if (!editMode) { alert('请先开启编辑模式'); return; }
