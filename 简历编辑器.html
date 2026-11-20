@@ -134,6 +134,51 @@
   body.editing .edu-item:hover .item-add,
   body.editing .skill-cat:hover .item-add { display: block !important; }
   body.block-editing .section .item-add { display: none !important; }
+  /* A-1 板块级新增按钮：标题区常驻，板块空了也能加 */
+  body.editing .section-title { position: relative; }
+  body.editing .section-add {
+    position: absolute; top: 50%; right: 4px; transform: translateY(-50%);
+    width: 18px; height: 18px; line-height: 16px; text-align: center;
+    background: #059669; color: #fff; border: none; border-radius: 50%;
+    font-size: 12px; cursor: pointer; padding: 0; display: none; z-index: 6;
+  }
+  body.editing .section:hover .section-add { display: block !important; }
+  body.block-editing .section .section-add { display: none !important; }
+  /* A-4 纯文本板块条目 */
+  body.editing .text-item { position: relative; margin: 2px 0; }
+  body.editing .text-item .text-line {
+    font-size: 9.2pt; line-height: 1.7; color: #333;
+    white-space: pre-wrap; padding: 1px 0;
+  }
+  body.editing .text-item:hover .item-del { display: block !important; }
+  body.editing .text-item:hover .item-add { display: block !important; }
+  /* A-5 经历描述 bullet 增删 */
+  body.editing .exp-desc li { position: relative; }
+  body.editing .exp-desc li > .li-del {
+    position: absolute; right: 0; top: 0; width: 13px; height: 13px; line-height: 11px;
+    text-align: center; background: #ef4444; color: #fff; border: none; border-radius: 50%;
+    font-size: 10px; cursor: pointer; display: none; z-index: 5;
+  }
+  body.editing .exp-desc li:hover > .li-del { display: block !important; }
+  body.editing .exp-desc ul > .li-add {
+    display: none; background: none; border: none; color: #059669; cursor: pointer;
+    font-size: 9pt; padding: 0 0 0 14px; text-align: left; width: 100%;
+  }
+  body.editing .exp-desc ul:hover > .li-add { display: block !important; }
+  /* A-6 联系方式增删 */
+  body.editing .contact-bar { position: relative; }
+  body.editing .contact-bar > span { position: relative; display: inline-block; margin-right: 6px; }
+  body.editing .contact-bar > span > .contact-del {
+    position: absolute; top: -6px; right: -8px; width: 13px; height: 13px; line-height: 11px;
+    text-align: center; background: #ef4444; color: #fff; border: none; border-radius: 50%;
+    font-size: 10px; cursor: pointer; display: none; z-index: 5;
+  }
+  body.editing .contact-bar > span:hover > .contact-del { display: block !important; }
+  body.editing .contact-bar .contact-add {
+    background: none; border: 1px dashed #94a3b8; border-radius: 3px;
+    color: #64748b; font-size: 9pt; cursor: pointer; padding: 0 6px; margin-left: 4px;
+  }
+  body.editing .contact-bar .contact-add:hover { border-color: #059669; color: #059669; }
   /* 整块编辑模式 */
   body.block-editing .section,
   body.block-editing .resume-header {
@@ -516,6 +561,7 @@
     <button class="btn" id="fidelityRedoBtn" onclick="redoFidelity()" style="display:none;font-size:11px;padding:5px 8px;" title="重做">↷ 重做</button>
     <button class="btn" id="fidelityExportBtn" onclick="exportFidelityPDF()" style="display:none;background:#1d4ed8;color:#fff;font-size:11px;padding:5px 10px;" title="导出保真版 PDF"> 导出PDF</button>
     <button class="btn" id="fidelityAvatarBtn" onclick="document.getElementById('avatarUpload').click()" style="display:none;background:#be185d;color:#fff;font-size:11px;padding:5px 10px;" title="上传证件照（双击保真画面已有证件照也可上传）"> 📷 证件照</button>
+    <button class="btn" id="fidelityAddBlockBtn" onclick="addFidelityTextBlockAtCursor()" style="display:none;background:#7c3aed;color:#fff;font-size:11px;padding:5px 10px;" title="新建一个文本块（保真模式）"> ＋ 新建文本块</button>
     <button class="btn btn-ai" onclick="openAISettings()" style="background:#7c3aed;color:#fff;"> AI 设置</button>
     <button class="btn btn-edit" id="editBtn" onclick="toggleEdit()"> 开启编辑</button>
     <button class="btn btn-ai" id="aiPolishBtn" onclick="openAI()" style="background:#a855f7;color:#fff;display:none;font-size:11px;padding:5px 10px;"> ✨ AI润色</button>
@@ -1402,8 +1448,8 @@
         sec.appendChild(btn);
       }
     });
-    // 给每个经历/项目/教育/技能条目加删除按钮
-    document.querySelectorAll('#resume .exp-item, #resume .edu-item, #resume .skill-cat').forEach(item => {
+    // 给每个条目加删除按钮（A-4: .text-item 也纳入）
+    document.querySelectorAll('#resume .exp-item, #resume .edu-item, #resume .skill-cat, #resume .text-item').forEach(item => {
       if (!item.querySelector('.item-del')) {
         const btn = document.createElement('button');
         btn.className = 'item-del';
@@ -1414,31 +1460,70 @@
         item.appendChild(btn);
       }
     });
-    // 给每个板块的最后一个条目加绿色 + 新增按钮（A-1）
     // 先清除所有旧的 item-add（让"最后一个"判定重新计算）
     document.querySelectorAll('#resume .item-add').forEach(b => b.remove());
+    // 给每个板块的最后一个条目加绿色 + 新增按钮
     document.querySelectorAll('#resume .section').forEach(sec => {
-      // 判断是什么板块
-      const title = sec.querySelector('.section-title-cn')?.textContent || '';
-      const isSkill = /技能|SKILLS|证书/.test(title);
-      const isEdu = /教育|EDUCATION/.test(title);
-      // 不用 :last-child —— 因为 .section-del 删除按钮会插在 section 最后，把 last-child 占了
-      const itemCls = isSkill ? 'skill-cat' : (isEdu ? 'edu-item' : 'exp-item');
+      const kind = detectItemKind(sec);
+      const itemCls = kind === 'skill' ? 'skill-cat' : (kind === 'edu' ? 'edu-item' : (kind === 'text' ? 'text-item' : 'exp-item'));
       const items = sec.querySelectorAll('.' + itemCls);
-      const lastItem = items[items.length - 1]; // 取最后一个条目
+      const lastItem = items[items.length - 1];
       if (!lastItem) return;
       if (lastItem.querySelector('.item-add')) return;
       const btn = document.createElement('button');
       btn.className = 'item-add';
       btn.type = 'button';
       btn.textContent = '+';
-      let kind = 'exp';
-      if (isSkill) kind = 'skill';
-      else if (isEdu) kind = 'edu';
-      const labelMap = { skill: '添加一项技能', edu: '添加一段教育', exp: '添加一段经历/项目' };
-      btn.title = labelMap[kind];
+      const labelMap = { skill: '添加一项技能', edu: '添加一段教育', exp: '添加一段经历/项目', text: '添加一段内容' };
+      btn.title = labelMap[kind] || '添加一条';
       btn.onclick = (e) => { e.stopPropagation(); addItemToSection(sec, kind); };
       lastItem.appendChild(btn);
+    });
+    // A-1: 板块标题区常驻 .section-add（板块空了也能加）
+    document.querySelectorAll('#resume .section').forEach(sec => {
+      if (sec.querySelector('.section-add')) return;
+      const titleEl = sec.querySelector('.section-title');
+      if (!titleEl) return;
+      const btn = document.createElement('button');
+      btn.className = 'section-add';
+      btn.type = 'button';
+      btn.textContent = '＋';
+      btn.title = '在此板块新增一条内容';
+      btn.onclick = (e) => { e.stopPropagation(); addItemToSection(sec, detectItemKind(sec)); };
+      titleEl.appendChild(btn);
+    });
+    // A-6: 联系方式增删
+    const cb = document.querySelector('#resume .contact-bar');
+    if (cb && !cb.querySelector('.contact-add')) {
+      const add = document.createElement('button');
+      add.className = 'contact-add';
+      add.type = 'button';
+      add.textContent = '＋ 联系方式';
+      add.title = '新增一项联系方式';
+      add.onclick = (e) => {
+        e.stopPropagation();
+        const span = document.createElement('span');
+        span.innerHTML = '<span class="label" contenteditable="true">微信</span> <span class="val" contenteditable="false">微信号</span>';
+        cb.insertBefore(span, add);
+        afterItemAdded(span);
+      };
+      cb.appendChild(add);
+    }
+    document.querySelectorAll('#resume .contact-bar > span').forEach(s => {
+      if (!s.querySelector('.contact-del')) {
+        const del = document.createElement('button');
+        del.className = 'contact-del';
+        del.type = 'button';
+        del.textContent = '×';
+        del.title = '删除该项';
+        del.onclick = (e) => {
+          e.stopPropagation();
+          if (cb.querySelectorAll(':scope > span').length <= 1) return;
+          s.remove();
+          pushHistory(); autoSave(); autoFitOnePage();
+        };
+        s.appendChild(del);
+      }
     });
   }
 
@@ -1502,6 +1587,36 @@
     autoSave();
     autoFitOnePage();
   }
+  // A-2: 统一的条目类型推断
+  function detectItemKind(sec) {
+    if (sec.querySelector('.skill-cat')) return 'skill';
+    if (sec.querySelector('.edu-item')) return 'edu';
+    if (sec.querySelector('.exp-item')) return 'exp';
+    if (sec.querySelector('.text-item')) return 'text';
+    const title = (sec.querySelector('.section-title-cn')?.textContent || '').trim();
+    if (/技能|证书|技术|语言|SKILL|CERTIFICATE/i.test(title)) return 'skill';
+    if (/教育|学历|学校|EDUCATION/i.test(title)) return 'edu';
+    if (/经历|经验|实践|活动|志愿|社团|获奖|荣誉|奖项|证书|论文|成果|作品|竞赛|PROJECT|AWARD|HONOR|PUBLICATION/i.test(title)) return 'exp';
+    return 'text';
+  }
+  function detectExpSubType(sec) {
+    const title = (sec.querySelector('.section-title-cn')?.textContent || '').trim();
+    if (/项目|PROJECT/i.test(title)) return 'project';
+    return 'internship';
+  }
+  function getBodyHost(sectionEl) {
+    return sectionEl.querySelector('.section-body') || sectionEl;
+  }
+  function insertItemInto(sectionEl, itemCls, newItem) {
+    const host = getBodyHost(sectionEl);
+    const same = Array.from(host.querySelectorAll('.' + itemCls));
+    if (same.length) {
+      same[same.length - 1].after(newItem);
+    } else {
+      host.appendChild(newItem);
+    }
+  }
+
   function deleteItem(item) {
     // 不弹确认——条目级删除应该轻量，用 undo 兜底
     item.remove();
@@ -1510,42 +1625,50 @@
     autoSave();
     autoFitOnePage();
   }
-  // A-2: 条目级新增函数（被 item-add 按钮调用）
+  // A-3: 条目级新增（统一走 insertItemInto，落在同类容器内）
   function addItemToSection(sectionEl, kind) {
-    const isSkill = kind === 'skill';
-    const isEdu = kind === 'edu';
-    if (isSkill) {
+    if (kind === 'skill') {
       let grid = sectionEl.querySelector('.skills-grid');
-      if (!grid) { grid = document.createElement('div'); grid.className = 'skills-grid'; sectionEl.appendChild(grid); }
+      if (!grid) { grid = document.createElement('div'); grid.className = 'skills-grid'; getBodyHost(sectionEl).appendChild(grid); }
       const div = document.createElement('div');
       div.className = 'skill-cat';
       div.innerHTML = '<div class="skill-name" contenteditable="false">技能名称</div><div class="skill-val" contenteditable="false">熟练程度/说明</div>';
       grid.appendChild(div);
       afterItemAdded(div);
-    } else if (isEdu) {
+      return;
+    }
+    if (kind === 'edu') {
       const div = document.createElement('div');
       div.className = 'edu-item';
       div.innerHTML = '<div class="school"><span contenteditable="false">学校名称</span><span class="major">· 专业</span><span class="degree">本科</span></div><div class="date" contenteditable="false">2020.09 – 2024.06</div>';
-      sectionEl.appendChild(div);
+      insertItemInto(sectionEl, 'edu-item', div);
       afterItemAdded(div);
-    } else {
-      // exp 区分实习/项目 — 用 section 标题判断
-      const title = sectionEl.querySelector('.section-title-cn')?.textContent || '';
-      const isProject = /项目|PROJECT/.test(title);
+      return;
+    }
+    if (kind === 'exp') {
       const div = document.createElement('div');
       div.className = 'exp-item';
+      const isProject = detectExpSubType(sectionEl) === 'project';
       div.innerHTML = '<div class="exp-header"><div>' +
-        (isProject ? '' : '<span class="company" contenteditable="false">公司名称</span><span class="role">｜职位</span>') +
-        (isProject ? '<span class="company" contenteditable="false">项目名称</span>' : '') +
+        (isProject ? '<span class="company" contenteditable="false">项目名称</span>' : '<span class="company" contenteditable="false">公司名称</span><span class="role">｜职位</span>') +
       '</div><div class="date" contenteditable="false">2024.01 – 至今</div></div>' +
       '<div class="exp-desc" contenteditable="false"><ul><li>工作内容描述…</li><li>成果产出…</li></ul></div>';
-      sectionEl.appendChild(div);
+      insertItemInto(sectionEl, 'exp-item', div);
       afterItemAdded(div);
+      return;
     }
+    // kind === 'text'：纯文本板块（自我评价 / 获奖经历 / 论文…）
+    const div = document.createElement('div');
+    div.className = 'text-item';
+    div.innerHTML = '<div class="text-line" contenteditable="false">在此输入内容…</div>';
+    insertItemInto(sectionEl, 'text-item', div);
+    afterItemAdded(div);
   }
   function afterItemAdded(newItem) {
     ensureEditable();
     document.querySelectorAll('#resume [contenteditable]').forEach(el => el.setAttribute('contenteditable', 'true'));
+    // A-5: 确保新条目里的 exp-desc li 有增删按钮
+    injectBulletBtns();
     refreshSectionDelButtons();
     originalSectionOrder = null;
     pushHistory();
@@ -1553,6 +1676,79 @@
     autoFitOnePage();
     const first = newItem.querySelector('[contenteditable="false"]');
     if (first) first.focus();
+  }
+  // A-5: 给所有 .exp-desc ul 的 li 加 .li-del，ul 末尾加 .li-add
+  function injectBulletBtns() {
+    document.querySelectorAll('#resume .exp-desc ul').forEach(ul => {
+      // 每个 li 加 ×
+      const lis = ul.querySelectorAll('li');
+      lis.forEach(li => {
+        if (!li.querySelector('.li-del')) {
+          const del = document.createElement('button');
+          del.className = 'li-del'; del.type = 'button'; del.textContent = '×';
+          del.title = '删除这条';
+          del.onclick = (e) => {
+            e.stopPropagation();
+            if (ul.querySelectorAll('li').length <= 1) return;
+            li.remove();
+            pushHistory(); autoSave(); autoFitOnePage();
+          };
+          li.appendChild(del);
+        }
+      });
+      // ul 末尾加 ＋
+      if (!ul.querySelector(':scope > .li-add')) {
+        const add = document.createElement('button');
+        add.className = 'li-add'; add.type = 'button'; add.textContent = '＋ 新增一条';
+        add.title = '追加一条工作内容';
+        add.onclick = (e) => {
+          e.stopPropagation();
+          const li = document.createElement('li');
+          li.textContent = '新工作内容…';
+          ul.appendChild(li);
+          injectBulletBtns(); // 给新 li 也加按钮
+          pushHistory(); autoSave(); autoFitOnePage();
+          li.focus();
+        };
+        ul.appendChild(add);
+      }
+    });
+  }
+  // A-7: 保真模式新建文本块（在视口中心位置新建）
+  function addFidelityTextBlockAtCursor() {
+    if (!currentDoc) { showToast('请先载入 1:1 保真简历', 'warn'); return; }
+    const canvas = document.getElementById('fidelityCanvas');
+    if (!canvas) return;
+    pushUndo();
+    const doc = currentDoc;
+    // 在视口中心找对应页面
+    const viewportH = window.innerHeight;
+    const canvasRect = canvas.getBoundingClientRect();
+    const centerY = viewportH / 2;
+    const pageEls = canvas.querySelectorAll('[data-page-index]');
+    let targetPageIdx = 0;
+    pageEls.forEach(el => {
+      const r = el.getBoundingClientRect();
+      if (centerY >= r.top && centerY <= r.bottom) targetPageIdx = Number(el.dataset.pageIndex);
+    });
+    const pg = doc.pages[targetPageIdx] || doc.pages[0];
+    const block = {
+      id: 'b_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+      type: 'text',
+      bbox: { x: 60, y: Math.min(pg.bbox.h - 30, 30), w: 260, h: 16 },
+      text: '新文本',
+      style: { fontSize: 11, fontWeight: 'normal', color: '#1f2937' },
+      meta: {}
+    };
+    pg.blocks.push(block);
+    renderDocFidelity(doc);
+    saveDocLocal();
+    // 找到新建的块并聚焦编辑
+    setTimeout(() => {
+      const el = canvas.querySelector(`[data-block-id="${block.id}"]`);
+      if (el) { el.contentEditable = 'true'; el.focus(); startEditBlock(el, block, canvas.querySelector(`[data-page-index="${targetPageIdx}"]`)); }
+    }, 100);
+    showToast('文本块已添加（点 × 关闭编辑）', 'info');
   }
 
   // ========== 整块编辑模式 ==========
@@ -2558,6 +2754,8 @@
       if (redoBtn) redoBtn.style.display = '';
       if (exportBtn) exportBtn.style.display = '';
       if (avatarBtn) avatarBtn.style.display = '';
+      const addBlkBtn = document.getElementById('fidelityAddBlockBtn');
+      if (addBlkBtn) addBlkBtn.style.display = '';
       renderDocFidelity(currentDoc);
       // 切到保真模式后自动挂证件照 overlay（如果 localStorage 有）
       try { const saved = localStorage.getItem(PHOTO_STORAGE_KEY); if (saved) syncFidelityPhotoOverlay(saved); } catch(_) {}
@@ -2574,6 +2772,8 @@
       if (redoBtn) redoBtn.style.display = 'none';
       if (exportBtn) exportBtn.style.display = 'none';
       if (avatarBtn) avatarBtn.style.display = 'none';
+      const addBlkBtn = document.getElementById('fidelityAddBlockBtn');
+      if (addBlkBtn) addBlkBtn.style.display = 'none';
       showToast('已切换到重排模式（套用编辑器模板）', 'info');
     }
   }
