@@ -1541,21 +1541,24 @@
       credentials: 'include',
       body: JSON.stringify({ prompt: userPrompt, system_prompt: systemPrompt, fingerprint: DEVICE_FP }),
     })
-    .then(r => r.json())
+    .then(r => {
+      if (!r.ok) return r.json().then(d => { throw new Error(d.detail || d.message || `HTTP ${r.status}`); });
+      return r.json();
+    })
     .then(data => {
       loading.style.display = 'none';
-      if (data.ok && data.result) {
-        result.textContent = data.result.trim();
+      if (data.content) {
+        result.textContent = data.content.trim();
         result.style.display = 'block';
         applyBtn.style.display = 'inline-block';
       } else {
-        result.textContent = '润色失败：' + (data.error || '未知错误');
+        result.textContent = '润色失败：未返回内容';
         result.style.display = 'block';
       }
     })
     .catch(err => {
       loading.style.display = 'none';
-      result.textContent = '网络错误：' + err.message;
+      result.textContent = '润色失败：' + err.message;
       result.style.display = 'block';
     });
   }
@@ -3832,12 +3835,27 @@ ${JSON.stringify(input)}
     }
 
     function buildSkillCat(line) {
-      let name = line, val = '';
+      // P1 bug3 fix: 智能判断内容 vs 技能名
+      // 有冒号 → name: val 分离
+      // 无冒号但行长 < 25 字 且 无句读标点 → 当短技能名
+      // 无冒号 但 行长 >= 25 字 或 有句读标点 → 整体当描述内容，name 用首句提炼或留空
+      let name = '', val = '';
       const colonMatch = line.match(/^([^:：]+)[:：]\s*(.+)$/);
-      if (colonMatch) { name = colonMatch[1].trim(); val = colonMatch[2].trim(); }
+      if (colonMatch) {
+        name = colonMatch[1].trim();
+        val = colonMatch[2].trim();
+      } else if (line.length < 25 && !/[。！？；;]/.test(line)) {
+        // 短的、无句号 → 当技能名
+        name = line.trim();
+      } else {
+        // 长的或有句号 → 当描述，技能名取开头短语（到第一个冒号/空格后停顿）
+        val = line.trim();
+        const phrase = val.match(/^([\u4e00-\u9fa5A-Za-z]{2,10})(?=能|与|及|或|、|：|:|：\s)/);
+        name = phrase ? phrase[1] : '';
+      }
       const div = document.createElement('div');
       div.className = 'skill-cat';
-      div.innerHTML = '<div class="skill-name" contenteditable="false">' + h(name) + '</div>' + (val ? '<div class="skill-val" contenteditable="false">' + h(val) + '</div>' : '');
+      div.innerHTML = (name ? '<div class="skill-name" contenteditable="false">' + h(name) + '</div>' : '') + (val ? '<div class="skill-val" contenteditable="false">' + h(val) + '</div>' : '');
       return div;
     }
 
