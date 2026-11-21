@@ -79,4 +79,4 @@ EMAIL_SMTP_PORT = int(os.getenv("EMAIL_SMTP_PORT", "465"))
 EMAIL_USE_SSL = os.getenv("EMAIL_USE_SSL", "true").lower() == "true"
 EMAIL_USER = os.getenv("EMAIL_USER", "")
 EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD", "")
-EMAIL_FROM_NAME = os.getenv("EMAIL_FROM_NAME", "简历编辑器客服")
+EMAIL_FROM_NAME = os.getenv("EMAIL_FROM_NAME", "简历改装厂客服")
