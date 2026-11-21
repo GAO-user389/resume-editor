@@ -764,7 +764,7 @@ def _run_ai_feedback_analysis(feedback_id: str, content: str, image_base64: str,
   "need_human": "是否需要管理员介入（true/false）"
 }}"""
 
-        analysis_raw = call_llm(analysis_prompt, system_prompt="你是简历编辑器的技术客服，负责分析用户反馈并给出诊断。严格按 JSON 输出。")
+        analysis_raw = call_llm(analysis_prompt, system_prompt="你是简历改装厂的技术客服，负责分析用户反馈并给出诊断。严格按 JSON 输出。")
         analysis_text = _format_ai_analysis(analysis_raw)
         analysis_json = _safe_parse_json(analysis_raw)
         category = analysis_json.get("category", "") if analysis_json else ""
@@ -777,7 +777,7 @@ def _run_ai_feedback_analysis(feedback_id: str, content: str, image_base64: str,
         # 如果 AI 已经自动发了码，把发码信息拼进 analysis 里让用户能看到
         if auto_code_result and auto_code_result.get("ok"):
             plan_label = "永久版" if auto_code_result["plan"] == "permanent" else f"30天版（到期 {auto_code_result['expires_at'][:10] if auto_code_result.get('expires_at') else ''}）"
-            auto_section = f"\n\n{'='*20}\n🎉 <b>AI 客服已自动识别付款截图并发放激活码！</b>\n\n<b>你的激活码：{auto_code_result['code']}</b>\n\n套餐：{plan_label}\n\n直接复制激活码，去简历编辑器顶栏点「⚡ 升级」按钮粘贴即可激活。\n{'='*20}\n"
+            auto_section = f"\n\n{'='*20}\n🎉 <b>AI 客服已自动识别付款截图并发放激活码！</b>\n\n<b>你的激活码：{auto_code_result['code']}</b>\n\n套餐：{plan_label}\n\n直接复制激活码，去简历改装厂顶栏点「⚡ 升级」按钮粘贴即可激活。\n{'='*20}\n"
             analysis_text = auto_section + analysis_text
             # 同时把激活码直接写进 admin_reply，让用户刷新时角标能看到
             reply_text = f"🎉 AI 客服自动识别付款成功，已发放激活码：\n\n<b>{auto_code_result['code']}</b>\n\n点击顶栏「⚡ 升级」→ 输入激活码即可。"
@@ -831,7 +831,7 @@ def _try_auto_issue_code(feedback_id: str, content: str, ocr_text: str, fingerpr
     # 进一步确认是不是付款截图场景（防误判）
     # 给轻量 prompt 验证
     try:
-        verify_prompt = f"""判断以下内容是否为用户付款成功的截图/文字，准备购买简历编辑器的激活码。
+        verify_prompt = f"""判断以下内容是否为用户付款成功的截图/文字，准备购买简历改装厂的激活码。
 用户说：{content[:200]}
 截图识别内容：{ocr_text[:500]}
 
@@ -880,7 +880,7 @@ def _try_auto_issue_code(feedback_id: str, content: str, ocr_text: str, fingerpr
 
 def _generate_fix_plan(context_text: str, analysis: dict) -> str:
     """给管理员看的修复方案——基于项目知识地图，告诉 AI 改哪个文件、改什么。"""
-    project_map = """【项目知识地图】这是一个简历编辑器 Web 应用，Render 部署（FastAPI 后端 + 静态前端）：
+    project_map = """【项目知识地图】这是一个简历改装厂 Web 应用，Render 部署（FastAPI 后端 + 静态前端）：
 
 前端（单文件）：
   - 简历编辑器.html          主页面，HTML+CSS+JS 全在里面，contenteditable 编辑简历
