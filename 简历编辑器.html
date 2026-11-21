@@ -2696,7 +2696,8 @@
 
   // 块编辑：双击文本块进入编辑
   function startEditBlock(el, block, page) {
-    pushUndo();
+    // 不再在这里 pushUndo —— 调用方（addFidelityTextBlockAtCursor）已经存了"新建前"快照
+    // 双击已有块编辑走 finish() 里的条件 push（改了文字才存）
     el.contentEditable = 'true';
     el.focus();
     // 选中全部文字
