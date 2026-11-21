@@ -2713,6 +2713,7 @@
       el.style.outline = '';
       const newText = el.textContent;
       if (newText !== block.text) {
+        pushUndo();           // ⬅️ 先存"编辑前"快照（block.text 还是旧值），撤销才能回退
         block.text = newText;
         saveDocLocal();
       }
