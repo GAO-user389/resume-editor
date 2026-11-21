@@ -144,7 +144,7 @@ def send_email(to_email: str, subject: str, html_body: str, plain_body: str = ""
 
 def notify_feedback_reply(to_email: str, user_content: str, admin_reply: str, ai_analysis: str = "") -> bool:
     """管理员回复工单后，给用户发一封友好的通知邮件。"""
-    subject = "📬 你的简历编辑器反馈已收到回复"
+    subject = "📬 你的简历改装厂反馈已收到回复"
 
     ai_section = ""
     if ai_analysis:
@@ -158,7 +158,7 @@ def notify_feedback_reply(to_email: str, user_content: str, admin_reply: str, ai
     <div style="max-width:520px;margin:0 auto;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#1f2937;">
         <div style="background:linear-gradient(135deg,#667eea,#764ba2);padding:24px;border-radius:12px 12px 0 0;color:white;">
             <div style="font-size:18px;font-weight:700;">📬 客服回复通知</div>
-            <div style="font-size:13px;opacity:.85;margin-top:4px;">来自「简历编辑器」客服中心</div>
+            <div style="font-size:13px;opacity:.85;margin-top:4px;">来自「简历改装厂」客服中心</div>
         </div>
         <div style="background:#fafafa;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 12px 12px;padding:24px;">
             <div style="font-size:13px;color:#6b7280;font-weight:600;margin-bottom:6px;">你之前的反馈：</div>
