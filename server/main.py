@@ -246,6 +246,13 @@ class ResumeParseRequest(BaseModel):
     fingerprint: str = Field(default='', max_length=128)
 
 
+class ResumeTailorRequest(BaseModel):
+    """AI 把简历改写为针对特定公司+岗位的定制版本。"""
+    original_text: str = Field(..., min_length=10, max_length=12000)
+    target_company: str = Field(..., min_length=1, max_length=50)
+    target_position: str = Field(..., min_length=1, max_length=50)
+
+
 # 管理员 session 存储（内存，重启失效；简单够用）
 _admin_sessions: dict = {}
 
@@ -470,6 +477,121 @@ JSON schema — 每个板块都是多行字符串，用 \n 换行：
         bool(parsed["header"]), bool(parsed["education"]), bool(parsed["internship"]),
         bool(parsed["projects"]), bool(parsed["skills"]))
     return JSONResponse(content={"ok": True, "sections": parsed})
+
+
+@app.post("/api/resume/tailor", tags=["resume"], dependencies=[Depends(rate_limit_dependency)])
+def tailor_resume(req: ResumeTailorRequest, request: Request):
+    """
+    AI 定制化改写：把同一份简历改写为针对特定公司+岗位的版本。
+    输出 schema 与 /api/resume/parse 完全一致（字符串板块），前端零改动复用渲染。
+    每次调用扣 1 次 AI 配额。
+    """
+    import json, re
+
+    ip = get_client_ip(request)
+
+    # 配额检查
+    quota = check_quota(uid_from_request(request))
+    if not quota["ok"]:
+        raise HTTPException(
+            status_code=403,
+            detail=f"今日免费次数已用完（{config.FREE_CALLS_DAILY}次/天），请购买后继续使用",
+        )
+
+    company = req.target_company
+    position = req.target_position
+
+    # 公司赛道关键词提示（辅助 AI 定位业务方向）
+    track_hints = {
+        "字节": "增长实验/数据驱动/内容生态/AI应用",
+        "腾讯": "社交生态/用户体验/游戏/企业服务",
+        "美团": "本地生活/O2O/配送网络/到店消费",
+        "阿里": "电商/云计算/物流/数字经济",
+        "百度": "搜索引擎/AI大模型/自动驾驶/知识图谱",
+        "京东": "自营电商/供应链/物流/零售科技",
+        "华为": "通信设备/云计算/芯片/企业级服务",
+        "网易": "游戏/音乐/教育/社区",
+        "小米": "IoT/消费电子/互联网服务",
+        "拼多多": "下沉市场/农业电商/供应链",
+        "快手": "短视频/直播/电商变现",
+        "小红书": "社区种草/内容电商/品牌营销",
+        "蚂蚁": "金融科技/支付/普惠金融",
+        "招行": "零售金融/财富管理/金融科技",
+        "摩根": "投行/并购/资本市场",
+        "普华永道": "审计/咨询/税务",
+    }
+    hint = ""
+    for k, v in track_hints.items():
+        if k in company:
+            hint = f"\n（{company} 业务赛道关键词参考：{v}）"
+            break
+
+    tailor_system = f"""你是资深简历顾问，擅长把同一份简历改写为针对特定公司+岗位的定制版本。
+
+目标公司：{company}
+目标岗位：{position}{hint}
+
+改写规则：
+1. 保留原始真实信息（不捏造经历/学历/技能）
+2. 根据目标公司业务赛道和岗位类型，调整呈现顺序和侧重点
+3. 实习/项目/技能板块：把最相关的经历/技能放前面
+4. 工作内容 bullet：改写措辞，加入岗位相关的关键词和动作词
+5. 保持客观真实，不夸大不捏造
+6. 用中文输出，专业干练
+
+输出格式：严格按以下 JSON schema（每个板块是多行字符串，用 \\n 换行）：
+{{
+  "header": "姓名\\n手机\\n邮箱\\n求职意向：{position}",
+  "education": "每行一条：学校 专业 学位 时间\\n...",
+  "internship": "第一条：公司 岗位 时间\\n· 工作内容一...\\n· 工作内容二...\\n第二条：...",
+  "projects": "第一条：项目名 角色 技术栈 时间\\n· 工作内容...\\n· 工作内容...",
+  "skills": "每行一条：技能名：描述\\n...",
+  "missing_sections": []
+}}
+
+注意：
+- 所有原始板块都要改写，不要删减
+- 实习/项目的工作内容保留 · 或 - bullet 符号
+- 技能板块每行 = 技能大类：描述内容
+- 只输出 JSON，不要 markdown fence 或解释"""
+
+    try:
+        raw = call_llm(req.original_text[:12000], tailor_system)
+        cleaned = raw.strip()
+        if cleaned.startswith('```'):
+            cleaned = re.sub(r'^```(?:json)?\s*', '', cleaned)
+            cleaned = re.sub(r'\s*```$', '', cleaned)
+            cleaned = cleaned.strip()
+        tailored = json.loads(cleaned)
+    except Exception as e:
+        logger.warning("简历定制化改写失败 ip=%s company=%s pos=%s: %s", ip, company, position, e)
+        # 降级：直接用原文本调用 parse 端点的 prompt
+        tailored = {"header": "", "education": "", "internship": "", "projects": "", "skills": "", "missing_sections": ["tailor_failed"]}
+
+    # 字段补全（同 parse_resume）
+    for k in ["header", "education", "internship", "projects", "skills"]:
+        if k not in tailored:
+            tailored[k] = ""
+    if "missing_sections" not in tailored:
+        tailored["missing_sections"] = []
+
+    # AI 调用成功，递增配额
+    if not quota["is_premium"] and quota["user_id"]:
+        try:
+            db.increment_daily_free_calls(quota["user_id"])
+        except Exception as e:
+            logger.warning("每日免费次数递增失败: %s", e)
+
+    remaining = quota["remaining"] if quota["is_premium"] else max(0, quota["remaining"] - 1)
+
+    changed = sum(1 for k in ["header", "education", "internship", "projects", "skills"] if tailored.get(k))
+    logger.info("简历定制化 ip=%s company=%s pos=%s changed=%d", ip, company, position, changed)
+
+    return JSONResponse(
+        content={"ok": True, "sections": tailored, "company": company, "position": position},
+        headers={"X-RateLimit-Remaining": str(remaining)},
+    )
+
 
 @app.post("/api/ai/ocr", tags=["ai"], dependencies=[Depends(rate_limit_dependency)])
 def ai_ocr(req: OCRRequest, request: Request):
