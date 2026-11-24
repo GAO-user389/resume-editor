@@ -2825,7 +2825,213 @@
   }
   window.exportFidelityPDF = exportFidelityPDF;
 
-  // 初始化：尝试从 localStorage 恢复
+  // ========== 批量定制简历辅助函数 ==========
+
+  function sanitizeFileName(name) {
+    return (name || 'resume').replace(/[\\/:*?"<>|\r\n\t]/g, '_').trim().substring(0, 50);
+  }
+
+  // 从重排模式 DOM 导出单份 PDF（fileName 参数化）
+  async function exportSinglePDF(fileName) {
+    if (!window.html2canvas || !window.jspdf) throw new Error('PDF 导出库未加载');
+    if (editMode) toggleEdit();
+
+    const resume = document.getElementById('resume');
+    const origH = resume.style.height;
+    const origOverflow = resume.style.overflow;
+    const origTransform = document.querySelector('.resume-inner')?.style.transform;
+
+    try {
+      document.querySelector('.resume-inner').style.transform = 'scale(1)';
+      resume.style.height = 'auto';
+      resume.style.overflow = 'visible';
+
+      const canvas = await html2canvas(resume, { scale: 2, useCORS: true, allowTaint: true, backgroundColor: '#ffffff', logging: false });
+
+      const imgData = canvas.toDataURL('image/jpeg', 0.92);
+      const { jsPDF } = window.jspdf;
+      const pdf = new jsPDF({ unit: 'mm', format: 'a4', orientation: 'portrait' });
+      const pdfW = pdf.internal.pageSize.getWidth();
+      const ratio = canvas.height / canvas.width;
+      let finalH = pdfW * ratio;
+
+      if (finalH <= pdf.internal.pageSize.getHeight()) {
+        pdf.addImage(imgData, 'JPEG', 0, 0, pdfW, finalH);
+      } else {
+        const pages = Math.ceil(finalH / pdf.internal.pageSize.getHeight());
+        for (let p = 0; p < pages; p++) {
+          if (p > 0) pdf.addPage();
+          const srcY = (p * pdf.internal.pageSize.getHeight() / finalH) * canvas.height;
+          const srcH = Math.min(pdf.internal.pageSize.getHeight(), finalH - p * pdf.internal.pageSize.getHeight()) / finalH * canvas.height;
+          const pageCanvas = document.createElement('canvas');
+          pageCanvas.width = canvas.width; pageCanvas.height = srcH;
+          const ctx = pageCanvas.getContext('2d');
+          ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, pageCanvas.width, pageCanvas.height);
+          ctx.drawImage(canvas, 0, srcY, canvas.width, srcH, 0, 0, canvas.width, srcH);
+          pdf.addImage(pageCanvas.toDataURL('image/jpeg', 0.9), 'JPEG', 0, 0, pdfW, srcH / finalH * finalH);
+        }
+      }
+      pdf.save(`${sanitizeFileName(fileName)}.pdf`);
+    } finally {
+      resume.style.height = origH;
+      resume.style.overflow = origOverflow;
+      if (origTransform !== undefined) document.querySelector('.resume-inner').style.transform = origTransform;
+      autoFitOnePage();
+    }
+  }
+
+  // 从当前 DOM 简历提取纯文本（给后端 tailor 用）
+  function extractResumePlainText() {
+    const resume = document.getElementById('resume');
+    if (!resume) return '';
+
+    const blocks = [];
+    // 头部
+    const name = resume.querySelector('.resume-header .name')?.textContent.trim();
+    const contactBar = resume.querySelector('.resume-header .contact-bar')?.textContent.trim();
+    if (name) blocks.push(name);
+    if (contactBar) blocks.push(contactBar);
+
+    // 各板块
+    const sectionMap = {
+      'education': { title: '教育背景', cls: '.edu-item', headerCls: '.school' },
+      'internship': { title: '实习经历', cls: '.exp-item', headerCls: '.exp-header' },
+      'projects': { title: '项目经历', cls: '.exp-item.project-item', headerCls: '.exp-header' },
+      'skills': { title: '技能与证书', cls: '.skill-cat', headerCls: '.skill-name' },
+    };
+    for (const [key, cfg] of Object.entries(sectionMap)) {
+      const items = resume.querySelectorAll(cfg.cls);
+      if (!items.length) continue;
+      const lines = [];
+      items.forEach(item => {
+        const header = item.querySelector(cfg.headerCls)?.textContent.trim() || item.textContent.trim();
+        const desc = item.querySelector('.edu-desc, .exp-desc, .skill-val')?.textContent.trim();
+        let line = header;
+        if (desc && desc !== header) {
+          // 把工作内容 bullet 拆成多行
+          const bullets = desc.split(/[·\-•]/).map(s => s.trim()).filter(Boolean);
+          if (bullets.length > 1) {
+            line = header + '\n' + bullets.map(b => '· ' + b).join('\n');
+          } else if (bullets.length === 1) {
+            line = header + '\n· ' + bullets[0];
+          } else {
+            line = header + '\n' + desc;
+          }
+        }
+        lines.push(line);
+      });
+      blocks.push(lines.join('\n'));
+    }
+    return blocks.join('\n\n');
+  }
+
+  // 更新飞书弹窗批量进度
+  function updateProgress(current, total, label) {
+    const bar = document.getElementById('feishuProgressBar');
+    const txt = document.getElementById('feishuProgressText');
+    const progress = document.getElementById('feishuProgress');
+    if (!bar) return;
+    progress.style.display = 'block';
+    const pct = Math.round(current / total * 100);
+    bar.style.width = pct + '%';
+    txt.textContent = `正在生成 (${current}/${total})：${label}`;
+  }
+
+  // 批量定制简历主流程
+  async function batchTailorAndExport() {
+    const checked = document.querySelectorAll('.fs-rec-check:checked');
+    const records = Array.from(checked).map(c => window._feishuRecords?.[+c.dataset.idx]).filter(Boolean);
+
+    if (!records.length) { alert('请至少勾选一个岗位'); return; }
+    if (records.length > 5) { alert('一次最多 5 个岗位，请分批操作'); return; }
+
+    // 保真模式 → 自动切重排
+    if (renderMode === 'fidelity') {
+      document.getElementById('reflowModeBtn')?.click();
+    }
+
+    // 取当前简历纯文本
+    const resumeText = extractResumePlainText();
+    if (resumeText.length < 50) { alert('当前简历内容太少，请先填写简历内容再批量生成'); return; }
+
+    // 确认对话框
+    const ok = confirm(
+      `将为 ${records.length} 个岗位生成定制简历，各消耗 1 次 AI 配额。\n\n` +
+      `岗位清单：\n` + records.map(r => `  · ${r.company} · ${r.position}`).join('\n') +
+      `\n\n确定开始吗？`
+    );
+    if (!ok) return;
+
+    // 显示进度条
+    const batchBar = document.getElementById('feishuBatchBar');
+    if (batchBar) batchBar.style.display = 'block';
+
+    let success = 0;
+    let failed = 0;
+
+    for (let i = 0; i < records.length; i++) {
+      const rec = records[i];
+      updateProgress(i, records.length, `${rec.company} · ${rec.position}`);
+
+      try {
+        const resp = await fetch('/api/resume/tailor', {
+          method: 'POST',
+          body: JSON.stringify({
+            original_text: resumeText,
+            target_company: rec.company,
+            target_position: rec.position,
+          }),
+          credentials: 'include',
+        });
+
+        if (!resp.ok) {
+          const err = await resp.json().catch(() => ({ detail: resp.statusText }));
+          showToast(`❌ ${rec.company} 失败：${err.detail || resp.status}`, 'error');
+          failed++;
+          continue;
+        }
+
+        const data = await resp.json();
+        if (!data.ok || !data.sections) {
+          showToast(`❌ ${rec.company} AI 返回格式异常`, 'error');
+          failed++;
+          continue;
+        }
+
+        // 保存当前状态到撤销栈
+        if (typeof pushHistory === 'function') pushHistory();
+
+        // 替换 DOM — 复用现有 applySectionsToTemplate
+        applySectionsToTemplate(data.sections);
+
+        // 重排 + 自动一页
+        autoFitOnePage();
+        refreshSectionDelButtons();
+
+        // 导出 PDF
+        await exportSinglePDF(`${rec.company}_${rec.position}`);
+        showToast(`✅ ${rec.company}_${rec.position}.pdf`, 'success');
+        success++;
+
+        // 恢复原简历文本，给下一轮用
+        // （applySectionsToTemplate 已经改了 DOM，所以 resumeText 变量保持不变，继续用原始文本）
+      } catch (e) {
+        showToast(`❌ ${rec.company} 异常：${e.message}`, 'error');
+        failed++;
+      }
+    }
+
+    updateProgress(records.length, records.length, `完成！成功 ${success}，失败 ${failed}`);
+
+    setTimeout(() => {
+      document.getElementById('feishuModal').classList.remove('active');
+      const batchBar = document.getElementById('feishuBatchBar');
+      if (batchBar) batchBar.style.display = 'none';
+    }, 1500);
+  }
+
+  window.batchTailorAndExport = batchTailorAndExport;
+  window.exportSinglePDF = exportSinglePDF;
   const savedDoc = loadDocLocal();
   if (savedDoc && savedDoc.version === 2) {
     currentDoc = savedDoc;
@@ -3284,14 +3490,35 @@ credentials: 'include',
         statusEl.textContent = '未识别到公司/岗位列，请确认表格中有「公司」「岗位」字段';
         statusEl.style.color = '#B91C1C';
       } else {
-        statusEl.textContent = `共读取到 ${records.length} 条投递记录，点击选择：`;
+        statusEl.textContent = `共读取到 ${records.length} 条投递记录，勾选要生成的岗位（一次最多 5 个）：`;
         statusEl.style.color = '#059669';
         listEl.innerHTML = records.map((r, i) => `
-          <div style="padding:8px 12px;border-bottom:1px solid #f3f4f6;cursor:pointer;display:flex;justify-content:space-between;align-items:center;" onclick="selectFeishuRecord(${i})" data-idx="${i}">
-            <div><strong>${r.company || '(未填公司)'}</strong><span style="color:#6b7280;margin-left:8px;">${r.position || '(未填岗位)'}</span></div>
-            <span style="font-size:11px;color:#1f6feb;">选择 →</span>
-          </div>`).join('');
+          <label style="display:flex;align-items:center;gap:10px;padding:9px 12px;border-bottom:1px solid #f3f4f6;cursor:pointer;">
+            <input type="checkbox" class="fs-rec-check" data-idx="${i}" style="margin:0;accent-color:#4338CA;">
+            <div style="flex:1;min-width:0;">
+              <strong>${r.company || '(未填公司)'}</strong>
+              <span style="color:#6b7280;margin-left:8px;">${r.position || '(未填岗位)'}</span>
+            </div>
+          </label>`).join('');
+        // 批量按钮区
+        listEl.insertAdjacentHTML('afterend', `
+          <div id="feishuBatchBar" style="display:none;margin-top:12px;padding:12px;background:#f9fafb;border-radius:8px;border:1px solid #e5e7eb;">
+            <div style="display:flex;gap:8px;margin-bottom:10px;">
+              <button type="button" class="file-btn" style="background:#4338CA;color:#fff;border-color:#4338CA;flex:1;" onclick="batchTailorAndExport()">🚀 批量生成定制简历</button>
+              <button type="button" class="file-btn" style="background:#fff;color:#6b7280;border:1px solid #d1d5db;" onclick="batchPickSingleForJD()">选一条手动填 JD</button>
+            </div>
+            <div id="feishuProgress" style="display:none;">
+              <div style="font-size:12px;color:#6b7280;margin-bottom:4px;" id="feishuProgressText"></div>
+              <div style="height:4px;background:#e5e7eb;border-radius:2px;overflow:hidden;">
+                <div id="feishuProgressBar" style="height:100%;background:#4338CA;width:0%;transition:width .3s;"></div>
+              </div>
+            </div>
+            <div style="font-size:11.5px;color:#9ca3af;margin-top:6px;">每个岗位消耗 1 次 AI 配额（免费 5 次/天）</div>
+          </div>`);
+        // 勾选变化时显示批量按钮区
+        listEl.addEventListener('change', onFsRecCheck, { once: false });
         window._feishuRecords = records;
+        window._feishuRecordsEl = listEl;
       }
     } catch (e) {
       statusEl.textContent = '读取失败：' + e.message;
@@ -3300,6 +3527,20 @@ credentials: 'include',
       btn.disabled = false; btn.textContent = '读取记录';
     }
   }
+  function onFsRecCheck(e) {
+    if (e.target.classList?.contains('fs-rec-check')) {
+      const checked = document.querySelectorAll('.fs-rec-check:checked').length;
+      const bar = document.getElementById('feishuBatchBar');
+      if (bar) bar.style.display = checked > 0 ? 'block' : 'none';
+    }
+  }
+  // 兼容旧行为：选第一条勾中的填 JD
+  function batchPickSingleForJD() {
+    const checked = document.querySelectorAll('.fs-rec-check:checked');
+    if (!checked.length) { alert('请先勾选至少一条记录'); return; }
+    const idx = +checked[0].dataset.idx;
+    selectFeishuRecord(idx);
+  }
   function selectFeishuRecord(idx) {
     const r = (window._feishuRecords || [])[idx];
     if (!r) return;
@@ -3307,6 +3548,7 @@ credentials: 'include',
     if (r.position) document.getElementById('jdPosition').value = r.position;
     document.getElementById('feishuModal').classList.remove('active');
   }
+  window.batchPickSingleForJD = batchPickSingleForJD;
   window.openFeishuImport = openFeishuImport;
   window.testFeishuConnection = testFeishuConnection;
   window.fetchFeishuRecords = fetchFeishuRecords;
