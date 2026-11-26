@@ -3421,6 +3421,15 @@
     // prompt_09: C-2 锁检查前置到 confirm 之前，避免多余确认框
     if (isAIBusy()) { showToast('AI 任务进行中，请稍后再操作', 'warn'); return; }
 
+    // prompt_11: P1-5 前置额度校验，避免勾 5 个只剩 3 次的尴尬
+    const _isPaid = userState.plan === 'permanent' || (userState.plan === 'monthly' && userState.is_premium);
+    const _freeRemain = userState.remaining >= 0 ? userState.remaining : userState.daily_limit;
+    if (!_isPaid && records.length > _freeRemain) {
+      if (!confirm(`当前免费剩余 ${_freeRemain} 次，但你勾了 ${records.length} 个岗位。\n\n` +
+        `继续的话后 ${records.length - _freeRemain} 个会因额度用完失败。\n` +
+        `要不要只跑前 ${_freeRemain} 个？`)) return;
+    }
+
     // 确认对话框
     const ok = confirm(
       `将为 ${records.length} 个岗位生成定制简历，各消耗 1 次 AI 配额。\n\n` +
@@ -3428,6 +3437,10 @@
       `\n\n确定开始吗？`
     );
     if (!ok) return;
+
+    // prompt_11: P0-1 批量定制前保存母版 DOM，跑完还原（否则母版会被定制版覆盖）
+    const _resumeEl = document.getElementById('resume');
+    const _motherHtml = _resumeEl.innerHTML;
 
     // prompt_07: P0-1 批量定制也纳入互斥锁
     await withAIOp('批量定制', async () => {
@@ -3442,6 +3455,12 @@
       const rec = records[i];
       updateProgress(i, records.length, `${rec.company} · ${rec.position}`);
 
+      // prompt_11: 每轮前二次检查剩余额度（避免多人同时用、或上轮 429 后额度变化）
+      if (!_isPaid && userState.remaining >= 0 && userState.remaining <= 0) {
+        showToast('额度已用完，停止剩余批量', 'warn');
+        break;
+      }
+
       try {
         const resp = await fetch('/api/resume/tailor', {
           method: 'POST',
@@ -3453,10 +3472,20 @@
           credentials: 'include',
         });
 
+        // prompt_11: P1-6 每轮都读 X-RateLimit-Remaining 响应头，同步更新额度显示 + AI 按钮状态
+        const _rlr = parseInt(resp.headers.get('X-RateLimit-Remaining'));
+        if (!isNaN(_rlr)) {
+          userState.remaining = _rlr;
+          updateQuotaDisplay();
+          _setAllAIButtonsDisabled(!_isPaid && _rlr <= 0);
+        }
+
         if (!resp.ok) {
           const err = await resp.json().catch(() => ({ detail: resp.statusText }));
           showToast(`❌ ${rec.company} 失败：${err.detail || resp.status}`, 'error');
           failed++;
+          // 429 = 额度彻底用完，直接停剩余
+          if (resp.status === 429) { showToast('额度用完，停止剩余批量', 'warn'); break; }
           continue;
         }
 
@@ -3489,6 +3518,15 @@
         failed++;
       }
     }
+
+    // prompt_11: P0-1 跑完强制还原母版（不管成败），编辑器不应停在最后一家定制版
+    try {
+      pushHistory();  // 把最后一家的定制版也入撤销栈（用户可能想手动回退查看）
+      _resumeEl.innerHTML = _motherHtml;
+      autoFitOnePage();
+      refreshSectionDelButtons();
+      showSaveStatus('已还原母版');
+    } catch(_) {}
 
     updateProgress(records.length, records.length, `完成！成功 ${success}，失败 ${failed}`);
 
