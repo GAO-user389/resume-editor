@@ -4534,7 +4534,22 @@ ${JSON.stringify(input)}
 
       // 3. 处理日期行之前的前置内容（如板块概述行）—— 并入第一个条目的 desc 开头
       // （通常无此情况，若有则附加）
-      return entries;
+
+      // 4. 残缺条目后处理：AI 偶尔会输出以"工作情况：""职责："等 bullet-like 前缀开头的 header，
+      //    这种条目没有有效实体名，应该把它合并到上一条目的 desc 里
+      const BULLET_PREFIX_RE = /^(工作情况|工作职能|工作职责|职责|岗位职责|工作描述|项目描述|项目职责|项目介绍|项目背景|负责|参与|推动|主导|协助|担任|负责内容|工作内容)\s*[：:]/;
+      const merged = [];
+      for (const e of entries) {
+        const headerStripped = (e.header || '').trim();
+        if (merged.length > 0 && BULLET_PREFIX_RE.test(headerStripped) && !isEntityHeader(headerStripped)) {
+          // 残缺条目 → 合并到上一条 desc
+          const prev = merged[merged.length - 1];
+          prev.desc = (prev.desc ? prev.desc + '\n' : '') + '· ' + headerStripped + (e.desc ? '\n' + e.desc : '');
+        } else {
+          merged.push(e);
+        }
+      }
+      return merged;
     }
 
     // 遍历 4 个板块
