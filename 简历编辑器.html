@@ -165,6 +165,66 @@
     font-size: 9pt; padding: 0 0 0 14px; text-align: left; width: 100%;
   }
   body.editing .exp-desc ul:hover > .li-add { display: block !important; }
+  /* ========== Boss直聘式结构化编辑 ========== */
+  /* 条目级按钮组（hover 时显示：✨✏️× 三个） */
+  .edu-item, .exp-item, .skill-cat { position: relative; }
+  .item-btn-group {
+    position: absolute; top: -2px; right: 18px; z-index: 6;
+    display: none; gap: 3px; align-items: center;
+  }
+  body.editing .edu-item:hover .item-btn-group,
+  body.editing .exp-item:hover .item-btn-group,
+  body.editing .skill-cat:hover .item-btn-group { display: flex !important; }
+  .item-btn-group .item-ai-btn,
+  .item-btn-group .item-edit-btn {
+    width: 16px; height: 16px; line-height: 14px; text-align: center;
+    border: none; border-radius: 50%; font-size: 10px; cursor: pointer; padding: 0;
+  }
+  .item-btn-group .item-ai-btn { background: #f3e8ff; color: #7c3aed; }
+  .item-btn-group .item-edit-btn { background: #dbeafe; color: #1d4ed8; }
+  .item-btn-group .item-ai-btn:hover { background: #7c3aed; color: #fff; }
+  .item-btn-group .item-edit-btn:hover { background: #1d4ed8; color: #fff; }
+
+  /* 单条 bullet 旁边的 ✨ */
+  body.editing .exp-desc li > .bullet-ai-btn {
+    position: absolute; right: 16px; top: 0; width: 13px; height: 13px; line-height: 11px;
+    text-align: center; background: #f3e8ff; color: #7c3aed; border: none; border-radius: 50%;
+    font-size: 9px; cursor: pointer; display: none; z-index: 5;
+  }
+  body.editing .exp-desc li:hover > .bullet-ai-btn { display: block !important; }
+  body.editing .exp-desc li > .bullet-ai-btn:hover { background: #7c3aed; color: #fff; }
+
+  /* 结构化编辑面板 */
+  .edit-form-panel {
+    position: fixed; z-index: 1000;
+    background: #fff; border-radius: 10px;
+    box-shadow: 0 12px 40px rgba(0,0,0,0.18);
+    border: 1px solid #e5e7eb;
+    padding: 18px 20px; min-width: 340px; max-width: 420px;
+    font-size: 13px;
+  }
+  .edit-form-panel .ef-title { font-weight: 600; color: #1f2937; margin-bottom: 12px; font-size: 14px; }
+  .edit-form-panel .ef-field { margin-bottom: 10px; position: relative; }
+  .edit-form-panel .ef-field label { display: block; font-size: 12px; color: #6b7280; margin-bottom: 3px; }
+  .edit-form-panel .ef-field input,
+  .edit-form-panel .ef-field textarea {
+    width: 100%; padding: 7px 28px 7px 10px; border: 1px solid #d1d5db; border-radius: 6px;
+    font-size: 13px; font-family: inherit; box-sizing: border-box;
+  }
+  .edit-form-panel .ef-field textarea { min-height: 60px; resize: vertical; }
+  .edit-form-panel .ef-field input:focus,
+  .edit-form-panel .ef-field textarea:focus { outline: none; border-color: #4338CA; box-shadow: 0 0 0 3px rgba(67,56,202,0.1); }
+  .edit-form-panel .ef-field .ef-polish-btn {
+    position: absolute; right: 4px; top: 26px; background: transparent; border: none;
+    color: #a855f7; font-size: 12px; cursor: pointer; padding: 2px; border-radius: 4px;
+  }
+  .edit-form-panel .ef-field .ef-polish-btn:hover { background: #f3e8ff; }
+  .edit-form-panel .ef-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 14px; }
+  .edit-form-panel .ef-actions button { padding: 7px 14px; border-radius: 6px; border: 1px solid #d1d5db; font-size: 13px; cursor: pointer; }
+  .edit-form-panel .ef-actions .save-btn { background: #4338CA; color: #fff; border-color: #4338CA; }
+  .edit-form-panel .ef-overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.12); z-index: 999;
+  }
   /* A-6 联系方式增删 */
   body.editing .contact-bar { position: relative; }
   body.editing .contact-bar > span { position: relative; display: inline-block; margin-right: 6px; }
@@ -1094,6 +1154,17 @@
   </div>
 </div>
 
+<!-- Boss直聘式结构化编辑面板 -->
+<div id="editFormOverlay" class="ef-overlay" style="display:none;" onclick="closeEditForm(event)"></div>
+<div id="editFormPanel" class="edit-form-panel" style="display:none;">
+  <div class="ef-title" id="efTitle">编辑</div>
+  <div id="efFields"></div>
+  <div class="ef-actions">
+    <button type="button" onclick="closeEditForm()">取消</button>
+    <button type="button" class="save-btn" onclick="saveEditForm()">保存</button>
+  </div>
+</div>
+
 <!-- 买断激活弹窗 -->
 <div class="ai-modal" id="premiumModal">
   <div class="ai-modal-content" style="max-width:560px;">
@@ -1527,6 +1598,11 @@
     });
     // A-5: 模板加载时也要给所有 exp-desc li 加 bullet 按钮
     injectBulletBtns();
+    // Boss直聘式：给所有条目注入 ✨✏️× 按钮组 + bullet 级 ✨
+    if (editMode) {
+      injectItemActions();
+      injectBulletAIBtns();
+    }
   }
   let blockEditMode = false;
   function openAddSectionModal() {
@@ -1669,6 +1745,8 @@
     document.querySelectorAll('#resume [contenteditable]').forEach(el => el.setAttribute('contenteditable', 'true'));
     // A-5: 确保新条目里的 exp-desc li 有增删按钮
     injectBulletBtns();
+    injectItemActions();
+    injectBulletAIBtns();
     refreshSectionDelButtons();
     originalSectionOrder = null;
     pushHistory();
@@ -1714,6 +1792,364 @@
       }
     });
   }
+
+  // ========== Boss直聘式结构化编辑 + AI 单块润色 ==========
+
+  // 字段 schema（按条目类型）
+  const EDIT_SCHEMAS = {
+    edu: [
+      { key: 'school', label: '学校名', type: 'text' },
+      { key: 'major', label: '专业', type: 'text' },
+      { key: 'degree', label: '学位', type: 'text' },
+      { key: 'date', label: '时间', type: 'text' },
+      { key: 'desc', label: '描述(GPA等)', type: 'textarea', polish: true, kind: 'desc' },
+    ],
+    internship: [
+      { key: 'company', label: '公司名', type: 'text' },
+      { key: 'role', label: '岗位', type: 'text' },
+      { key: 'date', label: '时间', type: 'text' },
+      { key: 'bullets', label: '工作内容(每行一条)', type: 'textarea', polish: true, kind: 'bullet', multiline: true },
+    ],
+    project: [
+      { key: 'company', label: '项目名', type: 'text' },
+      { key: 'role', label: '角色', type: 'text' },
+      { key: 'date', label: '时间', type: 'text' },
+      { key: 'tech', label: '技术栈', type: 'text', polish: true, kind: 'tech' },
+      { key: 'bullets', label: '项目描述(每行一条)', type: 'textarea', polish: true, kind: 'bullet', multiline: true },
+    ],
+    skill: [
+      { key: 'name', label: '技能名', type: 'text' },
+      { key: 'desc', label: '描述', type: 'textarea', polish: true, kind: 'desc' },
+    ],
+  };
+
+  // 当前编辑状态
+  let _editState = null;
+
+  // 条目类型自动识别
+  function detectItemType(item) {
+    if (item.classList.contains('edu-item')) return 'edu';
+    if (item.classList.contains('skill-cat')) return 'skill';
+    if (item.classList.contains('exp-item') && item.classList.contains('project-item')) return 'project';
+    if (item.classList.contains('exp-item')) return 'internship';
+    return 'text';
+  }
+
+  // 从 DOM 序列化条目 → 表单值
+  function serializeItem(item, type) {
+    const vals = {};
+    const q = (sel) => item.querySelector(sel);
+    const t = (sel) => q(sel)?.textContent?.trim() || '';
+    if (type === 'edu') {
+      vals.school = t('.school > span');
+      vals.major = t('.school .major').replace(/^[·\s]+/, '');
+      vals.degree = t('.school .degree');
+      vals.date = t('.date');
+      vals.desc = t('.edu-desc');
+    } else if (type === 'internship' || type === 'project') {
+      vals.company = t('.company');
+      vals.role = t('.role').replace(/^[｜|]\s*/, '');
+      vals.date = t('.date');
+      if (type === 'project') vals.tech = t('.project-tag');
+      vals.bullets = item.querySelectorAll('.exp-desc ul > li').map(li => li.textContent.trim()).join('\n');
+    } else if (type === 'skill') {
+      vals.name = t('.skill-name');
+      vals.desc = t('.skill-val');
+    }
+    return vals;
+  }
+
+  // 打开结构化编辑面板
+  function openEditForm(item, type) {
+    const schema = EDIT_SCHEMAS[type];
+    if (!schema) { showToast('暂不支持此类型的结构化编辑', 'warn'); return; }
+    const vals = serializeItem(item, type);
+    _editState = { item, type };
+
+    const panel = document.getElementById('editFormPanel');
+    const overlay = document.getElementById('editFormOverlay');
+    const titleEl = document.getElementById('efTitle');
+    const fieldsEl = document.getElementById('efFields');
+
+    const titles = { edu: '编辑教育经历', internship: '编辑实习经历', project: '编辑项目经历', skill: '编辑技能' };
+    titleEl.textContent = titles[type] || '编辑';
+
+    fieldsEl.innerHTML = schema.map(f => {
+      const v = vals[f.key] || '';
+      const inputHtml = f.type === 'textarea'
+        ? `<textarea id="ef_${f.key}" placeholder="${f.label}">${v.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</textarea>`
+        : `<input type="text" id="ef_${f.key}" value="${v.replace(/"/g,'&quot;').replace(/</g,'&lt;')}" placeholder="${f.label}">`;
+      const polishBtn = f.polish ? `<button type="button" class="ef-polish-btn" onclick="runFieldPolish('${f.key}', '${f.kind}')" title="AI 润色这个字段">✨</button>` : '';
+      return `<div class="ef-field">
+        <label>${f.label}</label>
+        ${inputHtml}
+        ${polishBtn}
+      </div>`;
+    }).join('');
+
+    // 定位
+    const rect = item.getBoundingClientRect();
+    panel.style.display = 'block';
+    overlay.style.display = 'block';
+    if (rect.right + 440 < window.innerWidth && rect.top + 100 < window.innerHeight) {
+      panel.style.left = (rect.right + 8) + 'px';
+      panel.style.top = Math.max(8, rect.top) + 'px';
+      panel.style.transform = '';
+    } else {
+      panel.style.left = '50%';
+      panel.style.top = '50%';
+      panel.style.transform = 'translate(-50%, -50%)';
+    }
+  }
+
+  // 关面板
+  function closeEditForm(e) {
+    if (e && e.target !== e.currentTarget) return;
+    document.getElementById('editFormOverlay').style.display = 'none';
+    document.getElementById('editFormPanel').style.display = 'none';
+    _editState = null;
+  }
+
+  // 面板内单字段 AI 润色
+  async function runFieldPolish(key, kind) {
+    const ta = document.getElementById('ef_' + key);
+    if (!ta) return;
+    const original = ta.value;
+    if (!original.trim()) return;
+
+    const prompts = {
+      bullet: '你是简历优化专家。润色这条/这些工作内容，加行动动词、量化表达、专业术语。保持原有事实。直接输出润色后的内容，不要 bullet 符号，每行一条。',
+      desc: '你是简历优化专家。润色这段描述，让它更专业精炼、有亮点。保持事实基础。直接输出。',
+      tech: '你是技术简历优化专家。润色技术栈描述，用标准技术术语、版本号和工具链名称。直接输出。',
+    };
+    ta.disabled = true;
+    const origBorder = ta.style.borderColor;
+    ta.value = '润色中…';
+    try {
+      const resp = await fetch(BACKEND_BASE_URL + '/api/ai/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          prompt: `润色对象：${kind}\n\n原文：\n${original}`,
+          system_prompt: prompts[kind] || prompts.desc,
+        }),
+      });
+      if (!resp.ok) throw new Error('HTTP ' + resp.status);
+      const data = await resp.json();
+      if (data.content) {
+        ta.value = data.content.trim();
+        ta.style.borderColor = '#059669';
+        setTimeout(() => ta.style.borderColor = origBorder || '', 1200);
+      }
+    } catch (e) {
+      ta.value = original;
+      showToast('润色失败：' + e.message, 'error');
+    }
+    ta.disabled = false;
+  }
+
+  // 保存编辑表单 → DOM
+  function saveEditForm() {
+    if (!_editState) return;
+    const { item, type } = _editState;
+
+    const g = (k) => document.getElementById('ef_' + k)?.value?.trim() || '';
+    const vals = {};
+    EDIT_SCHEMAS[type].forEach(f => { vals[f.key] = g(f.key); });
+
+    // pushHistory 保存前快照
+    pushHistory();
+
+    const q = (sel) => item.querySelector(sel);
+
+    if (type === 'edu') {
+      const schoolSpan = q('.school > span');
+      const majorEl = q('.school .major');
+      const degreeEl = q('.school .degree');
+      if (schoolSpan) schoolSpan.textContent = vals.school;
+      if (majorEl) majorEl.textContent = vals.major ? '· ' + vals.major : '';
+      if (degreeEl) degreeEl.textContent = vals.degree;
+      const dateEl = q('.date');
+      if (dateEl) dateEl.textContent = vals.date;
+      const descEl = q('.edu-desc');
+      if (descEl) descEl.textContent = vals.desc;
+    } else if (type === 'internship' || type === 'project') {
+      const companyEl = q('.company');
+      const roleEl = q('.role');
+      const dateEl = q('.date');
+      if (companyEl) companyEl.textContent = vals.company;
+      if (roleEl) roleEl.textContent = vals.role ? '｜' + vals.role : '';
+      if (dateEl) dateEl.textContent = vals.date;
+      if (type === 'project') {
+        const techEl = q('.project-tag');
+        if (techEl) techEl.textContent = vals.tech;
+      }
+      // bullets → 重建 ul > li
+      const bullets = vals.bullets.split('\n').map(b => b.replace(/^[·\-•]\s*/, '').trim()).filter(Boolean);
+      const descEl = q('.exp-desc');
+      if (descEl) {
+        descEl.innerHTML = '<ul>' + bullets.map(b => '<li>' + b + '</li>').join('') + '</ul>';
+      }
+    } else if (type === 'skill') {
+      const nameEl = q('.skill-name');
+      const valEl = q('.skill-val');
+      if (nameEl) nameEl.textContent = vals.name;
+      if (valEl) valEl.textContent = vals.desc;
+    }
+
+    closeEditForm();
+    // 按钮重建（因为 DOM 改了）
+    injectItemActions();
+    injectBulletBtns();
+    injectBulletAIBtns();
+    refreshSectionDelButtons();
+    autoSave();
+    autoFitOnePage();
+    showSaveStatus('已保存');
+  }
+
+  // 给所有条目注入 ✨✏️× 按钮组
+  function injectItemActions() {
+    const targets = document.querySelectorAll('#resume .edu-item, #resume .exp-item, #resume .skill-cat');
+    targets.forEach(item => {
+      // 先清旧按钮组
+      item.querySelectorAll('.item-btn-group').forEach(n => n.remove());
+      // 清旧的独立 ✏️✨
+      item.querySelectorAll('.item-edit-btn, .item-ai-btn').forEach(n => n.remove());
+
+      const type = detectItemType(item);
+      if (type === 'text') return;
+
+      const group = document.createElement('div');
+      group.className = 'item-btn-group';
+
+      const aiBtn = document.createElement('button');
+      aiBtn.className = 'item-ai-btn'; aiBtn.type = 'button'; aiBtn.textContent = '✨';
+      aiBtn.title = 'AI 润色整条';
+      aiBtn.onclick = (e) => { e.stopPropagation(); runItemPolish(item, type); };
+
+      const editBtn = document.createElement('button');
+      editBtn.className = 'item-edit-btn'; editBtn.type = 'button'; editBtn.textContent = '✏️';
+      editBtn.title = '结构化编辑';
+      editBtn.onclick = (e) => { e.stopPropagation(); openEditForm(item, type); };
+
+      // × 用已有的 item-del
+      group.append(aiBtn, editBtn);
+      item.appendChild(group);
+    });
+  }
+
+  // 给每个 exp-desc ul > li 加 ✨ bullet 润色按钮
+  function injectBulletAIBtns() {
+    document.querySelectorAll('#resume .exp-desc ul > li').forEach(li => {
+      if (li.querySelector('.bullet-ai-btn')) return;
+      const btn = document.createElement('button');
+      btn.className = 'bullet-ai-btn'; btn.type = 'button'; btn.textContent = '✨';
+      btn.title = 'AI 润色这条';
+      btn.onclick = (e) => { e.stopPropagation(); runBulletPolish(li); };
+      li.appendChild(btn);
+    });
+  }
+
+  // 条目级 ✨ — AI 润色整条
+  async function runItemPolish(item, type) {
+    const g = (sel) => item.querySelector(sel);
+    let text, systemPrompt;
+
+    if (type === 'edu') {
+      const school = g('.school > span')?.textContent || '';
+      const major = g('.school .major')?.textContent || '';
+      const degree = g('.school .degree')?.textContent || '';
+      const date = g('.date')?.textContent || '';
+      const desc = g('.edu-desc')?.textContent || '';
+      text = [school + major + degree, date, desc].filter(Boolean).join('\n');
+      systemPrompt = '你是简历优化专家。润色这条教育经历的描述部分（GPA/排名/奖项/项目经历等），让它更突出。保持学校名、专业、学位、时间不变。直接输出润色后的描述。';
+    } else if (type === 'internship' || type === 'project') {
+      text = item.querySelectorAll('.exp-desc ul > li').map(li => li.textContent.trim()).filter(Boolean).join('\n');
+      systemPrompt = '你是简历优化专家。润色这些工作/项目经历 bullet，加行动动词、量化表达、专业术语。保持每条核心事实不变。输出润色后的 bullet，每行一条，· 开头。';
+    } else if (type === 'skill') {
+      text = item.innerText;
+      systemPrompt = '你是简历优化专家。润色这条技能描述，让它更具体、更有亮点。保持技能名不变，直接输出润色后的描述。';
+    } else return;
+
+    if (!text.trim()) return;
+
+    pushHistory();
+
+    try {
+      showToast('AI 润色中…', 'info');
+      const resp = await fetch(BACKEND_BASE_URL + '/api/ai/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ prompt: text, system_prompt: systemPrompt }),
+      });
+      if (!resp.ok) throw new Error(resp.status);
+      const data = await resp.json();
+      const polished = (data.content || '').trim();
+      if (!polished) return;
+
+      if (type === 'internship' || type === 'project') {
+        const liEls = item.querySelectorAll('.exp-desc ul > li');
+        const lines = polished.split('\n').map(l => l.replace(/^[·\-•]\s*/, '').trim()).filter(Boolean);
+        liEls.forEach((li, i) => { if (lines[i]) li.textContent = lines[i]; });
+      } else if (type === 'edu') {
+        const descEl = g('.edu-desc');
+        if (descEl) descEl.textContent = polished;
+      } else if (type === 'skill') {
+        const nameEl = g('.skill-name');
+        const valEl = g('.skill-val');
+        // 技能：尝试拆分 name: desc
+        const match = polished.match(/^([^:：]{2,20})[:：]\s*(.+)$/s);
+        if (match && nameEl && valEl) {
+          nameEl.textContent = match[1].trim();
+          valEl.textContent = match[2].trim();
+        } else if (valEl) {
+          valEl.textContent = polished;
+        }
+      }
+
+      injectItemActions();
+      injectBulletBtns();
+      injectBulletAIBtns();
+      autoSave();
+      autoFitOnePage();
+      showToast('✅ 润色完成', 'success');
+    } catch (e) {
+      showToast('润色失败：' + e.message, 'error');
+    }
+  }
+
+  // bullet 级 ✨ — AI 润色单条工作内容
+  async function runBulletPolish(li) {
+    const original = li.textContent.replace(/✨.*$/, '').trim();
+    if (!original) return;
+    li.style.color = '#7c3aed';
+    li.textContent = '润色中…';
+    try {
+      const resp = await fetch(BACKEND_BASE_URL + '/api/ai/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          prompt: original,
+          system_prompt: '你是简历优化专家。润色这条简历工作内容，加行动动词、量化表达，保持原有事实。直接输出润色后的单条内容（不要 bullet 符号、不要换行、不要解释）。',
+        }),
+      });
+      if (!resp.ok) throw new Error(resp.status);
+      const data = await resp.json();
+      pushHistory();
+      li.textContent = (data.content || '').trim() || original;
+      autoFitOnePage(); autoSave();
+      injectBulletAIBtns(); // 重新挂 ✨ 按钮
+      showToast('✅ 润色完成', 'success');
+    } catch (e) {
+      li.textContent = original;
+      showToast('润色失败：' + e.message, 'error');
+    }
+  }
+
   // A-7: 保真模式新建文本块（在视口中心位置新建）
   function addFidelityTextBlockAtCursor() {
     if (!currentDoc) { showToast('请先载入 1:1 保真简历', 'warn'); return; }
