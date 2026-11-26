@@ -2118,8 +2118,9 @@
       autoFitOnePage();
       showToast('✅ 润色完成', 'success');
     } catch (e) {
-      showToast('润色失败：' + e.message, 'error');
+      showToast('润色失败：' + (e.message || ''), 'error');
     }
+    });
   }
 
   // bullet 级 ✨ — AI 润色单条工作内容
