@@ -624,7 +624,7 @@
     <button class="btn" id="fidelityAddBlockBtn" onclick="addFidelityTextBlockAtCursor()" style="display:none;background:#7c3aed;color:#fff;font-size:11px;padding:5px 10px;" title="新建一个文本块（保真模式）"> ＋ 新建文本块</button>
     <button class="btn btn-ai" onclick="openAISettings()" style="background:#7c3aed;color:#fff;"> AI 设置</button>
     <button class="btn btn-edit" id="editBtn" onclick="toggleEdit()"> 开启编辑</button>
-    <button class="btn btn-ai" id="aiPolishBtn" onclick="openAI()" style="background:#a855f7;color:#fff;display:none;font-size:11px;padding:5px 10px;"> ✨ AI润色</button>
+    <button class="btn btn-ai" id="aiPolishBtn" onclick="openAI()" data-ai-op style="background:#a855f7;color:#fff;display:none;font-size:11px;padding:5px 10px;"> ✨ AI润色</button>
     <button class="btn" id="addSectionBtn" onclick="openAddSectionModal()" style="background:#059669;color:#fff;display:none;"> 添加板块</button>
     <button class="btn btn-reset" id="undoBtn" onclick="undoEdit()" disabled style="opacity:0.4;cursor:not-allowed;"> 撤销上一步</button>
     <button class="btn btn-reset" id="redoBtn" onclick="redoEdit()" disabled style="opacity:0.4;cursor:not-allowed;"> 重做 ↷</button>
@@ -1129,7 +1129,7 @@
     </div>
     <div class="actions">
       <button class="btn btn-reset" onclick="closeAI()">取消</button>
-      <button class="btn btn-ai" onclick="runPolish()"> 生成</button>
+      <button class="btn btn-ai" onclick="runPolish()" data-ai-op> 生成</button>
       <button class="btn btn-export" id="aiApplyBtn" onclick="applyResult()" style="display:none"> 应用到简历</button>
     </div>
   </div>
@@ -1354,6 +1354,8 @@
     updateRedoBtn();
   }
   function undoEdit() {
+    // prompt_07: C-9 AI 在途时撤销被拦截
+    if (isAIBusy()) { showToast('AI 任务进行中，请稍后再撤销', 'warn'); return; }
     // 如果有待保存的输入，立即落盘再撤销
     if (historyDebounce) {
       clearTimeout(historyDebounce);
@@ -1368,11 +1370,11 @@
     const resume = document.getElementById('resume');
     const fc = resume.querySelector('#fidelityCanvas');
     resume.innerHTML = prev;
+    docEpoch++;   // prompt_07: 文档整体替换，版本号 +1
     if (fc && !resume.querySelector('#fidelityCanvas')) resume.appendChild(fc);
     if (editMode) {
       ensureEditable();
       document.querySelectorAll('#resume [contenteditable]').forEach(el => el.setAttribute('contenteditable', 'true'));
-      // 撤销恢复的删除按钮丢失了事件绑定，先移除再重新添加
       document.querySelectorAll('#resume .section-del').forEach(b => b.remove());
       refreshSectionDelButtons();
     }
@@ -1384,6 +1386,7 @@
   function redoEdit() {
     // FAIL7: 普通编辑模式重做（与 undoEdit 对称）
     if (!redoHistory.length) return;
+    if (isAIBusy()) { showToast('AI 任务进行中，请稍后再重做', 'warn'); return; }  // prompt_07: C-9
     const snap = redoHistory.pop();          // 从重做栈取出
     history.push(snap);                      // 回到历史栈
     if (history.length > MAX_HISTORY) history.shift();
@@ -1391,6 +1394,7 @@
     const resume = document.getElementById('resume');
     const fc = resume.querySelector('#fidelityCanvas');
     resume.innerHTML = snap;
+    docEpoch++;   // prompt_07: 文档整体替换
     if (fc && !resume.querySelector('#fidelityCanvas')) resume.appendChild(fc);
     if (editMode) {
       ensureEditable();
@@ -1851,7 +1855,7 @@
       vals.role = t('.role').replace(/^[｜|]\s*/, '');
       vals.date = t('.date');
       if (type === 'project') vals.tech = t('.project-tag');
-      vals.bullets = item.querySelectorAll('.exp-desc ul > li').map(li => li.textContent.trim()).join('\n');
+      vals.bullets = Array.from(item.querySelectorAll('.exp-desc ul > li')).map(li => li.textContent.trim()).join('\n');
     } else if (type === 'skill') {
       vals.name = t('.skill-name');
       vals.desc = t('.skill-val');
@@ -1912,41 +1916,33 @@
 
   // 面板内单字段 AI 润色
   async function runFieldPolish(key, kind) {
-    const ta = document.getElementById('ef_' + key);
-    if (!ta) return;
-    const original = ta.value;
-    if (!original.trim()) return;
+    await withAIOp('字段润色', async () => {
+      const ta = document.getElementById('ef_' + key);
+      if (!ta) return;
+      const original = ta.value;
+      if (!original.trim()) return;
 
-    const prompts = {
-      bullet: '你是简历优化专家。润色这条/这些工作内容，加行动动词、量化表达、专业术语。保持原有事实。直接输出润色后的内容，不要 bullet 符号，每行一条。',
-      desc: '你是简历优化专家。润色这段描述，让它更专业精炼、有亮点。保持事实基础。直接输出。',
-      tech: '你是技术简历优化专家。润色技术栈描述，用标准技术术语、版本号和工具链名称。直接输出。',
-    };
-    ta.disabled = true;
-    const origBorder = ta.style.borderColor;
-    ta.value = '润色中…';
-    try {
-      const resp = await fetch(BACKEND_BASE_URL + '/api/ai/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({
-          prompt: `润色对象：${kind}\n\n原文：\n${original}`,
-          system_prompt: prompts[kind] || prompts.desc,
-        }),
-      });
-      if (!resp.ok) throw new Error('HTTP ' + resp.status);
-      const data = await resp.json();
-      if (data.content) {
-        ta.value = data.content.trim();
-        ta.style.borderColor = '#059669';
-        setTimeout(() => ta.style.borderColor = origBorder || '', 1200);
+      const prompts = {
+        bullet: '你是简历优化专家。润色这条/这些工作内容，加行动动词、量化表达、专业术语。保持原有事实。直接输出润色后的内容，不要 bullet 符号，每行一条。',
+        desc: '你是简历优化专家。润色这段描述，让它更专业精炼、有亮点。保持事实基础。直接输出。',
+        tech: '你是技术简历优化专家。润色技术栈描述，用标准技术术语、版本号和工具链名称。直接输出。',
+      };
+      ta.disabled = true;
+      const origBorder = ta.style.borderColor;
+      ta.value = '润色中…';
+      try {
+        const content = await callLLM(`润色对象：${kind}\n\n原文：\n${original}`, prompts[kind] || prompts.desc);
+        if (content) {
+          ta.value = content.trim();
+          ta.style.borderColor = '#059669';
+          setTimeout(() => ta.style.borderColor = origBorder || '', 1200);
+        }
+      } catch (e) {
+        ta.value = original;
+        showToast('润色失败：' + (e.message || ''), 'error');
       }
-    } catch (e) {
-      ta.value = original;
-      showToast('润色失败：' + e.message, 'error');
-    }
-    ta.disabled = false;
+      ta.disabled = false;
+    });
   }
 
   // 保存编辑表单 → DOM
@@ -2054,60 +2050,65 @@
 
   // 条目级 ✨ — AI 润色整条
   async function runItemPolish(item, type) {
-    const g = (sel) => item.querySelector(sel);
-    let text, systemPrompt;
+    await withAIOp('整条润色', async () => {
+      const g = (sel) => item.querySelector(sel);
+      let text, systemPrompt;
 
-    if (type === 'edu') {
-      const school = g('.school > span')?.textContent || '';
-      const major = g('.school .major')?.textContent || '';
-      const degree = g('.school .degree')?.textContent || '';
-      const date = g('.date')?.textContent || '';
-      const desc = g('.edu-desc')?.textContent || '';
-      text = [school + major + degree, date, desc].filter(Boolean).join('\n');
-      systemPrompt = '你是简历优化专家。润色这条教育经历的描述部分（GPA/排名/奖项/项目经历等），让它更突出。保持学校名、专业、学位、时间不变。直接输出润色后的描述。';
-    } else if (type === 'internship' || type === 'project') {
-      text = item.querySelectorAll('.exp-desc ul > li').map(li => li.textContent.trim()).filter(Boolean).join('\n');
-      systemPrompt = '你是简历优化专家。润色这些工作/项目经历 bullet，加行动动词、量化表达、专业术语。保持每条核心事实不变。输出润色后的 bullet，每行一条，· 开头。';
-    } else if (type === 'skill') {
-      text = item.innerText;
-      systemPrompt = '你是简历优化专家。润色这条技能描述，让它更具体、更有亮点。保持技能名不变，直接输出润色后的描述。';
-    } else return;
-
-    if (!text.trim()) return;
-
-    pushHistory();
-
-    try {
-      showToast('AI 润色中…', 'info');
-      const resp = await fetch(BACKEND_BASE_URL + '/api/ai/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({ prompt: text, system_prompt: systemPrompt }),
-      });
-      if (!resp.ok) throw new Error(resp.status);
-      const data = await resp.json();
-      const polished = (data.content || '').trim();
-      if (!polished) return;
-
-      if (type === 'internship' || type === 'project') {
-        const liEls = item.querySelectorAll('.exp-desc ul > li');
-        const lines = polished.split('\n').map(l => l.replace(/^[·\-•]\s*/, '').trim()).filter(Boolean);
-        liEls.forEach((li, i) => { if (lines[i]) li.textContent = lines[i]; });
-      } else if (type === 'edu') {
-        const descEl = g('.edu-desc');
-        if (descEl) descEl.textContent = polished;
+      if (type === 'edu') {
+        const school = g('.school > span')?.textContent || '';
+        const major = g('.school .major')?.textContent || '';
+        const degree = g('.school .degree')?.textContent || '';
+        const date = g('.date')?.textContent || '';
+        const desc = g('.edu-desc')?.textContent || '';
+        text = [school + major + degree, date, desc].filter(Boolean).join('\n');
+        systemPrompt = '你是简历优化专家。润色这条教育经历的描述部分（GPA/排名/奖项/项目经历等），让它更突出。保持学校名、专业、学位、时间不变。直接输出润色后的描述。';
+      } else if (type === 'internship' || type === 'project') {
+        text = Array.from(item.querySelectorAll('.exp-desc ul > li')).map(li => li.textContent.trim()).filter(Boolean).join('\n');
+        systemPrompt = '你是简历优化专家。润色这些工作/项目经历 bullet，加行动动词、量化表达、专业术语。保持每条核心事实不变。输出润色后的 bullet，每行一条，· 开头。';
       } else if (type === 'skill') {
-        const nameEl = g('.skill-name');
-        const valEl = g('.skill-val');
-        // 技能：尝试拆分 name: desc
-        const match = polished.match(/^([^:：]{2,20})[:：]\s*(.+)$/s);
-        if (match && nameEl && valEl) {
-          nameEl.textContent = match[1].trim();
-          valEl.textContent = match[2].trim();
-        } else if (valEl) {
-          valEl.textContent = polished;
+        text = item.innerText;
+        systemPrompt = '你是简历优化专家。润色这条技能描述，让它更具体、更有亮点。保持技能名不变，直接输出润色后的描述。';
+      } else return;
+
+      if (!text.trim()) return;
+
+      // prompt_07: 请求前记录版本
+      const epoch = docEpoch;
+
+      try {
+        showToast('AI 润色中…', 'info');
+        const polished = (await callLLM(text, systemPrompt)).trim();
+        if (!polished) return;
+
+        // prompt_07: 回写前校验版本和节点
+        if (epoch !== docEpoch) {
+          showToast('简历内容在润色期间发生了变化，本次结果未应用，请重试', 'warn');
+          return;
         }
+        if (!item.isConnected) {
+          showToast('目标条目已被移除，本次润色未应用', 'warn');
+          return;
+        }
+
+        pushHistory();
+
+        if (type === 'internship' || type === 'project') {
+          const liEls = item.querySelectorAll('.exp-desc ul > li');
+          const lines = polished.split('\n').map(l => l.replace(/^[·\-•]\s*/, '').trim()).filter(Boolean);
+          liEls.forEach((li, i) => { if (lines[i]) li.textContent = lines[i]; });
+        } else if (type === 'edu') {
+          const descEl = g('.edu-desc');
+          if (descEl) descEl.textContent = polished;
+        } else if (type === 'skill') {
+          const nameEl = g('.skill-name');
+          const valEl = g('.skill-val');
+          const match = polished.match(/^([^:：]{2,20})[:：]\s*(.+)$/s);
+          if (match && nameEl && valEl) {
+            nameEl.textContent = match[1].trim();
+            valEl.textContent = match[2].trim();
+          } else if (valEl) {
+            valEl.textContent = polished;
+          }
       }
 
       injectItemActions();
@@ -2123,31 +2124,37 @@
 
   // bullet 级 ✨ — AI 润色单条工作内容
   async function runBulletPolish(li) {
-    const original = li.textContent.replace(/✨.*$/, '').trim();
-    if (!original) return;
-    li.style.color = '#7c3aed';
-    li.textContent = '润色中…';
-    try {
-      const resp = await fetch(BACKEND_BASE_URL + '/api/ai/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({
-          prompt: original,
-          system_prompt: '你是简历优化专家。润色这条简历工作内容，加行动动词、量化表达，保持原有事实。直接输出润色后的单条内容（不要 bullet 符号、不要换行、不要解释）。',
-        }),
-      });
-      if (!resp.ok) throw new Error(resp.status);
-      const data = await resp.json();
-      pushHistory();
-      li.textContent = (data.content || '').trim() || original;
-      autoFitOnePage(); autoSave();
-      injectBulletAIBtns(); // 重新挂 ✨ 按钮
-      showToast('✅ 润色完成', 'success');
-    } catch (e) {
-      li.textContent = original;
-      showToast('润色失败：' + e.message, 'error');
-    }
+    await withAIOp('单条润色', async () => {
+      const original = li.textContent.replace(/✨.*$/, '').trim();
+      if (!original) return;
+      li.style.color = '#7c3aed';
+      li.textContent = '润色中…';
+
+      const epoch = docEpoch;
+      try {
+        const polished = await callLLM(original,
+          '你是简历优化专家。润色这条简历工作内容，加行动动词、量化表达，保持原有事实。直接输出润色后的单条内容（不要 bullet 符号、不要换行、不要解释）。'
+        );
+
+        if (epoch !== docEpoch) {
+          showToast('简历内容在润色期间发生了变化，本次结果未应用', 'warn');
+          return;
+        }
+        if (!li.isConnected) {
+          showToast('目标条目已被移除', 'warn');
+          return;
+        }
+
+        pushHistory();
+        li.textContent = (polished || '').trim() || original;
+        autoFitOnePage(); autoSave();
+        injectBulletAIBtns();
+        showToast('✅ 润色完成', 'success');
+      } catch (e) {
+        li.textContent = original;
+        showToast('润色失败：' + (e.message || ''), 'error');
+      }
+    });
   }
 
   // A-7: 保真模式新建文本块（在视口中心位置新建）
@@ -2279,49 +2286,41 @@
   }
   function closeAI() { document.getElementById('aiModal').classList.remove('active'); }
   function setPrompt(t) { document.getElementById('aiPrompt').value = t; }
-  function runPolish() {
-    const text = document.getElementById('aiCurrentText').value;
-    const prompt = document.getElementById('aiPrompt').value;
-    if (!text.trim()) { alert('请输入要润色的内容'); return; }
-    const loading = document.getElementById('aiLoading');
-    const result = document.getElementById('aiResult');
-    const applyBtn = document.getElementById('aiApplyBtn');
-    loading.style.display = 'inline'; result.style.display = 'none'; applyBtn.style.display = 'none';
+  async function runPolish() {
+    await withAIOp('AI 润色', async () => {
+      const text = document.getElementById('aiCurrentText').value;
+      const prompt = document.getElementById('aiPrompt').value;
+      if (!text.trim()) { alert('请输入要润色的内容'); return; }
+      const loading = document.getElementById('aiLoading');
+      const result = document.getElementById('aiResult');
+      const applyBtn = document.getElementById('aiApplyBtn');
+      loading.style.display = 'inline'; result.style.display = 'none'; applyBtn.style.display = 'none';
 
-    // P1 bug5 fix: 改为真实调用后端 AI API，不再是前端正则替换
-    const systemPrompt = '你是简历优化专家。根据用户指定的润色方向，重写这段简历经历，让它更专业、更有亮点。保持原内容的事实基础和结构，用更职业的表达和更强的行动动词。直接输出润色后的内容，不要加解释。';
-    let userPrompt = `润色方向：${prompt || '专业优化'}\n\n简历内容：\n${text}`;
+      const systemPrompt = '你是简历优化专家。根据用户指定的润色方向，重写这段简历经历，让它更专业、更有亮点。保持原内容的事实基础和结构，用更职业的表达和更强的行动动词。直接输出润色后的内容，不要加解释。';
+      let userPrompt = `润色方向：${prompt || '专业优化'}\n\n简历内容：\n${text}`;
 
-    fetch(BACKEND_BASE_URL + '/api/ai/chat', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      credentials: 'include',
-      body: JSON.stringify({ prompt: userPrompt, system_prompt: systemPrompt, fingerprint: DEVICE_FP }),
-    })
-    .then(r => {
-      if (!r.ok) return r.json().then(d => { throw new Error(d.detail || d.message || `HTTP ${r.status}`); });
-      return r.json();
-    })
-    .then(data => {
-      loading.style.display = 'none';
-      if (data.content) {
-        result.textContent = data.content.trim();
-        result.style.display = 'block';
-        applyBtn.style.display = 'inline-block';
-      } else {
-        result.textContent = '润色失败：未返回内容';
+      try {
+        const content = await callLLM(userPrompt, systemPrompt);
+        loading.style.display = 'none';
+        if (content) {
+          result.textContent = content.trim();
+          result.style.display = 'block';
+          applyBtn.style.display = 'inline-block';
+        } else {
+          result.textContent = '润色失败：未返回内容';
+          result.style.display = 'block';
+        }
+      } catch (err) {
+        loading.style.display = 'none';
+        result.textContent = '润色失败：' + (err.message || err);
         result.style.display = 'block';
       }
-    })
-    .catch(err => {
-      loading.style.display = 'none';
-      result.textContent = '润色失败：' + err.message;
-      result.style.display = 'block';
     });
   }
   function applyResult() {
     const result = document.getElementById('aiResult').textContent;
     if (!lastEditable) { alert('请先开启编辑模式并点击简历中的某个板块'); return; }
+    if (typeof pushHistory === 'function') pushHistory();   // prompt_07: P2-1 纳入撤销栈
     lastEditable.innerText = result;
     lastEditable.scrollIntoView({ behavior:'smooth', block:'center' });
     closeAI();
@@ -3381,9 +3380,10 @@
     if (!records.length) { alert('请至少勾选一个岗位'); return; }
     if (records.length > 5) { alert('一次最多 5 个岗位，请分批操作'); return; }
 
-    // 保真模式 → 自动切重排
+    // prompt_07: P1-2 批量定制仅支持重排模式（不再隐式切模式）
     if (renderMode === 'fidelity') {
-      document.getElementById('reflowModeBtn')?.click();
+      alert('批量定制仅支持重排模式，请先切换到重排模式后再操作');
+      return;
     }
 
     // 取当前简历纯文本
@@ -3398,6 +3398,8 @@
     );
     if (!ok) return;
 
+    // prompt_07: P0-1 批量定制也纳入互斥锁
+    await withAIOp('批量定制', async () => {
     // 显示进度条
     const batchBar = document.getElementById('feishuBatchBar');
     if (batchBar) batchBar.style.display = 'block';
@@ -3464,6 +3466,7 @@
       const batchBar = document.getElementById('feishuBatchBar');
       if (batchBar) batchBar.style.display = 'none';
     }, 1500);
+    });  // prompt_07: withAIOp 闭合
   }
 
   window.batchTailorAndExport = batchTailorAndExport;
@@ -3940,7 +3943,7 @@ credentials: 'include',
         listEl.insertAdjacentHTML('afterend', `
           <div id="feishuBatchBar" style="display:none;margin-top:12px;padding:12px;background:#f9fafb;border-radius:8px;border:1px solid #e5e7eb;">
             <div style="display:flex;gap:8px;margin-bottom:10px;">
-              <button type="button" class="file-btn" style="background:#4338CA;color:#fff;border-color:#4338CA;flex:1;" onclick="batchTailorAndExport()">🚀 批量生成定制简历</button>
+              <button type="button" class="file-btn" data-ai-op style="background:#4338CA;color:#fff;border-color:#4338CA;flex:1;" onclick="batchTailorAndExport()">🚀 批量生成定制简历</button>
               <button type="button" class="file-btn" style="background:#fff;color:#6b7280;border:1px solid #d1d5db;" onclick="batchPickSingleForJD()">选一条手动填 JD</button>
             </div>
             <div id="feishuProgress" style="display:none;">
@@ -4697,6 +4700,7 @@ ${JSON.stringify(input)}
   // 统一渲染：把 sections dict 渲染成简历 HTML
   // 把 AI 返回的 sections JSON 填充到原始模板 DOM 里（保留模板 CSS 排版）
   function applySectionsToTemplate(sections) {
+    docEpoch++;   // prompt_07: 文档整体替换（填入简历 + 批量定制都走这里）
     const h = (s) => (s || '').replace(/</g,'&lt;').replace(/>/g,'&gt;');
     const resume = document.getElementById('resume');
 
@@ -5386,6 +5390,38 @@ credentials: 'include',
       }
     });
   })();
+
+  /* ---------- AI 操作互斥锁 ---------- */
+  let aiOpLock = null;   // { name, startedAt }
+
+  function isAIBusy() { return !!aiOpLock; }
+
+  async function withAIOp(name, fn) {
+    if (aiOpLock) {
+      showToast(`正在执行「${aiOpLock.name}」，请等它完成后再操作`, 'warn');
+      return { skipped: true };
+    }
+    aiOpLock = { name, startedAt: Date.now() };
+    syncAIButtons();
+    try {
+      return await fn();
+    } finally {
+      aiOpLock = null;
+      syncAIButtons();
+    }
+  }
+
+  function syncAIButtons() {
+    const busy = isAIBusy();
+    document.querySelectorAll('[data-ai-op]').forEach(b => {
+      b.disabled = busy;
+      b.style.opacity = busy ? '0.5' : '';
+      b.title = busy ? `正在执行「${aiOpLock?.name}」…` : '';
+    });
+  }
+
+  /* ---------- 文档版本号 ---------- */
+  let docEpoch = 0;   // 任何整体替换 DOM 的操作都要 ++
 
   /* ---------- LLM 调用（统一走后端 /api/ai/chat） ---------- */
   // 报告#5 修复：加 30 秒 AbortController 超时，429 明确提示
