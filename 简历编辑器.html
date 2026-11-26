@@ -2321,8 +2321,9 @@
   function applyResult() {
     const result = document.getElementById('aiResult').textContent;
     if (!lastEditable) { alert('请先开启编辑模式并点击简历中的某个板块'); return; }
-    if (typeof pushHistory === 'function') pushHistory();   // prompt_07: P2-1 纳入撤销栈
+    // prompt_09: C-8 pushHistory 必须在写入之后，否则去重逻辑会跳过入栈导致不可撤销
     lastEditable.innerText = result;
+    if (typeof pushHistory === 'function') pushHistory();
     lastEditable.scrollIntoView({ behavior:'smooth', block:'center' });
     closeAI();
     autoFitOnePage();
@@ -3390,6 +3391,9 @@
     // 取当前简历纯文本
     const resumeText = extractResumePlainText();
     if (resumeText.length < 50) { alert('当前简历内容太少，请先填写简历内容再批量生成'); return; }
+
+    // prompt_09: C-2 锁检查前置到 confirm 之前，避免多余确认框
+    if (isAIBusy()) { showToast('AI 任务进行中，请稍后再操作', 'warn'); return; }
 
     // 确认对话框
     const ok = confirm(
@@ -5034,6 +5038,8 @@ ${JSON.stringify(input)}
   }
 
   async function fillUploadedResume() {
+    // prompt_09: C-1 润色在途点填入简历会整体替换 DOM，需拦截
+    if (isAIBusy()) { showToast('AI 任务进行中，请稍后再操作', 'warn'); return; }
     const text = document.getElementById('uploadedResumeText').value.trim();
     if (!text) { alert('请先上传或粘贴简历内容'); return; }
     const mode = document.querySelector('input[name="fillMode"]:checked').value;
