@@ -1054,7 +1054,7 @@
             <option value="skills">仅技能与证书</option>
           </select>
           <button class="file-btn" onclick="extractResume()"> 自动抓取当前简历</button>
-          <label class="file-btn"> 上传简历文件< input type="file" accept=".pdf,.docx,.txt" onchange="handleResumeUpload(this)"></label>
+          <label class="file-btn"> 上传简历文件 <input type="file" accept=".pdf,.docx,.txt" onchange="handleResumeUpload(this)"></label>
         </div>
         <div class="hint">支持 PDF / Word / TXT。纯前端解析，不上传任何服务器。</div>
       </div>
@@ -2258,16 +2258,33 @@
   });
 
   // ========== 富文本执行 ==========
+  // prompt_10: P1-7 修复富文本作用对象——优先用选区所在节点，lastEditable 只当 fallback
+  function _getSelectionEditable() {
+    try {
+      const sel = window.getSelection();
+      if (sel && sel.rangeCount > 0 && sel.toString().trim().length > 0) {
+        let node = sel.anchorNode;
+        while (node && node !== document.body) {
+          if (node.nodeType === 1 && node.getAttribute && node.getAttribute('contenteditable') === 'true') return node;
+          node = node.parentNode;
+        }
+      }
+    } catch(e) {}
+    return lastEditable;
+  }
   function execCmd(cmd, val) {
     if (!editMode) { alert('请先开启编辑模式'); return; }
-    if (!lastEditable) { alert('请先点击要编辑的区域'); return; }
-    lastEditable.focus();
+    const target = _getSelectionEditable();
+    if (!target) { alert('请先点击要编辑的区域或选中文字'); return; }
+    target.focus();
     document.execCommand(cmd, false, val || null);
   }
   function setLineHeight(val) {
-    if (!editMode || !lastEditable) return;
-    lastEditable.focus();
-    lastEditable.style.lineHeight = (val / 100).toString();
+    if (!editMode) return;
+    const target = _getSelectionEditable();
+    if (!target) return;
+    target.focus();
+    target.style.lineHeight = (val / 100).toString();
   }
 
   // ========== AI 润色 ==========
@@ -2456,9 +2473,18 @@
 
   // ========== 启动 ==========
   window.addEventListener('load', () => {
-    // P0 fix: 禁用自动恢复 localStorage 保存的简历，防止首页显示用户真实简历
-    // 用户之前填的真实信息（高海洋/手机号等）被持久化，每次打开都自动恢复
-    // loadAutosave();
+    // prompt_10: 恢复自动保存，但加"恢复/不恢复"选择，既解决刷新白干又尊重隐私
+    const hasTemplateInUrl = new URLSearchParams(location.search).has('tpl');
+    try {
+      const saved = localStorage.getItem(SAVE_KEY);
+      if (saved && !hasTemplateInUrl) {
+        const resume = document.getElementById('resume');
+        const hasContent = resume.innerText.trim().length > 30; // 有默认模板内容
+        if (hasContent && confirm('检测到上次编辑未保存的简历，是否恢复？\n\n"取消"则使用空白模板重新开始。')) {
+          loadAutosave();
+        }
+      }
+    } catch(e) {}
     autoFitOnePage();
     setTimeout(autoFitOnePage, 500); // 等头像加载完
   });
@@ -5346,7 +5372,30 @@ ${JSON.stringify(input)}
       const limit = userState.daily_limit || 3;
       el.textContent = `免费剩余 ${remain}/${limit} 次（每日重置）`;
       el.style.color = remain <= 1 ? '#dc2626' : '#fff';
+      // prompt_10: P1-8 配额耗尽时全局禁用所有 ✨ AI 按钮（避免点了才告诉你没用）
+      _setAllAIButtonsDisabled(!isPaid && remain <= 0);
     }
+  }
+  // prompt_10: P1-8 禁用/启用所有 AI 润色按钮
+  function _setAllAIButtonsDisabled(disabled) {
+    const allBtns = [
+      document.getElementById('aiPolishBtn'),
+      ...document.querySelectorAll('.item-ai-btn, .bullet-ai-btn, .field-ai-btn'),
+    ].filter(Boolean);
+    allBtns.forEach(b => {
+      b.disabled = disabled;
+      b.style.opacity = disabled ? '0.3' : '';
+      b.style.cursor = disabled ? 'not-allowed' : '';
+      b.title = disabled ? '今日 AI 次数已用完，明日再来（点此看升级）' : (b.getAttribute('data-orig-title') || b.title);
+      // 点击时弹升级弹窗而不是默默失败
+      if (disabled && !b._origOnclick) {
+        b._origOnclick = b.onclick;
+        b.onclick = () => showPremiumModal();
+      } else if (!disabled && b._origOnclick) {
+        b.onclick = b._origOnclick;
+        b._origOnclick = null;
+      }
+    });
   }
   identifyDevice();
 
@@ -6287,7 +6336,7 @@ ${userPrompt || '（无）'}
       </div>`;
     const intHtml = `
       <div class="section">
-      { key: 'internship', pats: ['实习经历', '工作经历', 'INTERNSHIP', 'EXPERIENCE'], label: '实习/工作经历' },
+        <div class="section-title"><span class="section-bar"></span><span class="section-title-cn" contenteditable="false">实习/工作经历</span><span class="section-title-en">EXPERIENCE</span></div>
         <div class="section-divider"></div><div class="section-divider-light"></div>
         ${renderExperience(tpl.internship, false)}
       </div>`;
